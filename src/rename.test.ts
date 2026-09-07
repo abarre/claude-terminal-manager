@@ -6,7 +6,7 @@ const { mockDispose, mockRunFork } = vi.hoisted(() => ({
 }))
 
 vi.mock('vscode', () => ({
-  env: { appName: 'Code' },
+  env: { appName: 'Code', appRoot: '/app-root' },
   Uri: {
     from: vi.fn((components: { scheme: string; path: string; query?: string }) => ({
       scheme: components.scheme,
@@ -100,6 +100,7 @@ vi.mock('node:fs', () => ({
   unlinkSync: vi.fn(),
   readdirSync: vi.fn().mockReturnValue([]),
   readFileSync: vi.fn().mockReturnValue('{}'),
+  existsSync: vi.fn().mockReturnValue(true),
 }))
 
 vi.mock('effect', async (importOriginal) => {

@@ -29,6 +29,7 @@ const {
 vi.mock('vscode', () => ({
   env: {
     appName: 'Code',
+    appRoot: '/app-root',
     openExternal: vi.fn().mockResolvedValue(true),
   },
   Uri: {
@@ -672,6 +673,36 @@ describe('extension', () => {
   })
 
   describe('activateWindow via code CLI', () => {
+    const getFocusRemoteTerminalHandler = (): ((
+      node: RemoteTerminalNode,
+    ) => void) => {
+      const match = vi
+        .mocked(vscode.commands.registerCommand)
+        .mock.calls.find(
+          ([cmd]) => cmd === 'claudeTerminalManager.focusRemoteTerminal',
+        )
+      expect(match).toBeDefined()
+      return match![1] as (node: RemoteTerminalNode) => void
+    }
+
+    const makeRemoteNode = (): RemoteTerminalNode => ({
+      kind: 'remoteTerminal',
+      windowId: 'win123',
+      terminalName: 'bash',
+      workspaceName: 'test-project',
+      workspaceFolderPath: '/home/user/test-project',
+      socketPath: '/tmp/test.sock',
+    })
+
+    const findCodeCliCall = (): unknown[] | undefined => {
+      const call = mockExecFile.mock.calls.find((c) => {
+        const args = c[1] as string[] | undefined
+        return args?.includes('-r') ?? false
+      })
+      expect(call).toBeDefined()
+      return call
+    }
+
     it('focusRemoteTerminal calls code CLI with -r and folder path', () => {
       const ctx = makeContext('/storage')
       extension.activate(ctx as never)
@@ -699,10 +730,58 @@ describe('extension', () => {
         return args?.includes('-r') ?? false
       })
       expect(codeCall).toBeDefined()
-      expect(codeCall![0]).toBe('code')
+      expect(codeCall![0]).toBe(path.join('/app-root', 'bin', 'code'))
       const args = codeCall![1] as string[]
       expect(args).toContain('-r')
       expect(args).toContain('/home/user/test-project')
+    })
+
+    // Regression: a VS Code launched from the Dock/Finder has a PATH without
+    // /usr/local/bin, so execFile('code') fails with ENOENT and no window is raised.
+    it('resolves the CLI inside the app bundle rather than through PATH', () => {
+      const ctx = makeContext('/storage')
+      extension.activate(ctx as never)
+
+      const handler = getFocusRemoteTerminalHandler()
+      mockExecFile.mockClear()
+      handler(makeRemoteNode())
+
+      const codeCall = findCodeCliCall()
+      expect(codeCall![0]).toBe(path.join('/app-root', 'bin', 'code'))
+    })
+
+    it('falls back to the bare CLI name when the bundled CLI is absent', () => {
+      const bundledCli = path.join('/app-root', 'bin', 'code')
+      vi.mocked(fs.existsSync).mockImplementation((p) => p !== bundledCli)
+      try {
+        const ctx = makeContext('/storage')
+        extension.activate(ctx as never)
+
+        const handler = getFocusRemoteTerminalHandler()
+        mockExecFile.mockClear()
+        handler(makeRemoteNode())
+
+        expect(findCodeCliCall()![0]).toBe('code')
+      } finally {
+        vi.mocked(fs.existsSync).mockReturnValue(true)
+      }
+    })
+
+    it('keeps resolving through PATH on Windows', () => {
+      const originalPlatform = process.platform
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      try {
+        const ctx = makeContext('/storage')
+        extension.activate(ctx as never)
+
+        const handler = getFocusRemoteTerminalHandler()
+        mockExecFile.mockClear()
+        handler(makeRemoteNode())
+
+        expect(findCodeCliCall()![0]).toBe('code')
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform })
+      }
     })
 
     it('does not call execFile when workspaceFolderPath is undefined', () => {
@@ -829,7 +908,9 @@ describe('extension', () => {
 
         expect(mockExecFile).toHaveBeenCalledTimes(2)
         expect(mockExecFile.mock.calls[0]![0]).toBe('/usr/bin/osascript')
-        expect(mockExecFile.mock.calls[1]![0]).toBe('code')
+        expect(mockExecFile.mock.calls[1]![0]).toBe(
+          path.join('/app-root', 'bin', 'code'),
+        )
         expect(mockExecFile.mock.calls[1]![1]).toEqual([
           '-r',
           '/home/user/test-project',

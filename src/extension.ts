@@ -308,7 +308,23 @@ function detectGitBranch(folderPath: string | undefined): string | undefined {
 let _runtime: { dispose(): Promise<void> } | undefined
 
 export function activate(context: vscode.ExtensionContext): void {
-  const codeCli = vscode.env.appName.includes('Insiders') ? 'code-insiders' : 'code'
+  // A VS Code launched from the Dock/Finder/desktop launcher inherits a minimal PATH
+  // (on macOS: /usr/bin:/bin:/usr/sbin:/sbin), which excludes the /usr/local/bin symlink
+  // the `code` CLI installs itself into — execFile('code') then fails with ENOENT and the
+  // remote window is never raised. Prefer the CLI shipped inside the app bundle, which is
+  // always there and never depends on PATH.
+  const resolveCodeCli = (): string => {
+    const cliName = vscode.env.appName.includes('Insiders')
+      ? 'code-insiders'
+      : 'code'
+    // On Windows the bundled entry point is code.cmd and the installer puts it on PATH,
+    // so keep resolving through PATH there.
+    if (process.platform === 'win32') return cliName
+    const bundledCli = path.join(vscode.env.appRoot, 'bin', cliName)
+    return fs.existsSync(bundledCli) ? bundledCli : cliName
+  }
+
+  const codeCli = resolveCodeCli()
 
   const activateWithCodeCli = (folderPath: string | undefined): void => {
     if (folderPath === undefined) {
