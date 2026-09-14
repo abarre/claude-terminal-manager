@@ -545,7 +545,11 @@ describe('transitionSession', () => {
       expect(result.activeBlockingTool).toBe('ExitPlanMode')
     })
 
-    it('pre_tool_use(Bash) clears activeBlockingTool', () => {
+    // Previously this asserted the opposite. Clearing here was wrong: Claude
+    // issues tool calls in parallel, so a Bash starting says nothing about
+    // whether the question on screen has been answered, and clearing left the
+    // row reading "Running: Bash" with the prompt still waiting.
+    it('pre_tool_use(Bash) leaves a standing prompt blocking', () => {
       const r = {
         ...createSession(makeStart()),
         status: 'running' as const,
@@ -558,7 +562,7 @@ describe('transitionSession', () => {
         source: 'claude',
       }
       const result = transitionSession(r, event)
-      expect(result.activeBlockingTool).toBeUndefined()
+      expect(result.activeBlockingTool).toBe('AskUserQuestion')
     })
 
     it('user_prompt_submit clears activeBlockingTool', () => {
@@ -1027,5 +1031,78 @@ describe('background task gating', () => {
   it('a new session start clears the carried-over count', () => {
     const record = transitionSession(stopWith(2), makeStart())
     expect(record.backgroundTasks).toBe(0)
+  })
+})
+
+describe('a question survives tools running alongside it', () => {
+  const ask = (session_id: string): HookEvent => ({
+    event: 'pre_tool_use',
+    session_id,
+    tool_name: 'AskUserQuestion',
+  })
+  const bash = (session_id: string): HookEvent => ({
+    event: 'pre_tool_use',
+    session_id,
+    tool_name: 'Bash',
+  })
+  const completed = (session_id: string, tool_name: string): HookEvent => ({
+    event: 'tool_completed',
+    session_id,
+    tool_name,
+  })
+
+  const asking = (): SessionRecord =>
+    transitionSession(
+      createSession({ event: 'session_start', session_id: 's1', pid: 1 }),
+      ask('s1'),
+      true,
+    )
+
+  it('raises attention when the question is asked', () => {
+    const record = asking()
+    expect(record.needsAttention).toBe(true)
+    expect(record.activeBlockingTool).toBe('AskUserQuestion')
+  })
+
+  it('keeps attention when another tool starts in parallel', () => {
+    // Claude issues tool calls in parallel; a Bash starting says nothing about
+    // whether the question has been answered.
+    const record = transitionSession(asking(), bash('s1'), true)
+    expect(record.needsAttention).toBe(true)
+    expect(record.activeBlockingTool).toBe('AskUserQuestion')
+  })
+
+  it('keeps the question as the status label, not the parallel tool', () => {
+    const record = transitionSession(asking(), bash('s1'), true)
+    expect(record.statusLabel).toBe('Running: AskUserQuestion')
+  })
+
+  it('ignores a parallel tool completing', () => {
+    let record = transitionSession(asking(), bash('s1'), true)
+    record = transitionSession(record, completed('s1', 'Bash'), true)
+    expect(record.needsAttention).toBe(true)
+  })
+
+  it('retires the question when it is answered', () => {
+    let record = transitionSession(asking(), bash('s1'), true)
+    record = transitionSession(record, completed('s1', 'AskUserQuestion'), true)
+    expect(record.needsAttention).toBe(false)
+    expect(record.activeBlockingTool).toBeUndefined()
+  })
+
+  it('still advances the timestamp while blocked', () => {
+    const before = asking()
+    const after = transitionSession(before, bash('s1'), true)
+    expect(after.lastEventAt).toBeGreaterThanOrEqual(before.lastEventAt)
+  })
+
+  it('lets an ordinary tool set its label when nothing is blocking', () => {
+    const running = transitionSession(
+      createSession({ event: 'session_start', session_id: 's2', pid: 2 }),
+      bash('s2'),
+      true,
+    )
+    expect(running.statusLabel).toBe('Running: Bash')
+    expect(running.needsAttention).toBe(false)
   })
 })

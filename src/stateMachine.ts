@@ -186,6 +186,17 @@ export const transitionSession = (
       const isAttentionTool =
         event.tool_name === 'AskUserQuestion' ||
         event.tool_name === 'ExitPlanMode'
+
+      // A prompt already on screen outranks a tool merely starting. Claude
+      // issues tool calls in parallel, so a Bash beginning says nothing about
+      // whether a question is still waiting on an answer — and letting it
+      // clear the flag left sessions reading "Running: Bash" with a question
+      // sitting unanswered in the terminal. Only the matching tool_completed,
+      // the next prompt, an interrupt or the end of the turn retires it.
+      if (!isAttentionTool && record.activeBlockingTool !== undefined) {
+        return { ...record, status: 'running', lastEventAt: now }
+      }
+
       return {
         ...record,
         status: 'running',
