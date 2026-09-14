@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect } from 'vitest'
 import {
   type WindowEntry,
   deleteWindowEntry,
+  getWindowEntryPath,
   pruneDuplicateWindowFiles,
   pruneStaleWindowFiles,
   readAllWindowEntries,
@@ -30,6 +31,72 @@ const baseEntry = (): WindowEntry => ({
   socketPath: '/tmp/vscode-claude-12345.sock',
   terminals: [{ name: 'bash' }, { name: 'zsh', pid: 99 }],
   lastHeartbeat: Date.now(),
+})
+
+describe('writeWindowEntry atomicity', () => {
+  it('never leaves a partially written entry visible', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctm-reg-'))
+    try {
+      const big = 'x'.repeat(200_000)
+      const entry = (n: number): WindowEntry => ({
+        windowId: 'w1',
+        workspaceName: big + n,
+        socketPath: '/tmp/s.sock',
+        terminals: [],
+        lastHeartbeat: Date.now(),
+      })
+      const target = getWindowEntryPath(dir, 'w1')
+
+      // Interleave writes with reads; every read must see a complete entry.
+      for (let i = 0; i < 40; i += 1) {
+        await Effect.runPromise(writeWindowEntry(dir, entry(i)))
+        const raw = fs.readFileSync(target, 'utf8')
+        expect(() => JSON.parse(raw) as WindowEntry).not.toThrow()
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves no temp file behind', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctm-reg-'))
+    try {
+      await Effect.runPromise(
+        writeWindowEntry(dir, {
+          windowId: 'w1',
+          workspaceName: 'ws',
+          socketPath: '/tmp/s.sock',
+          terminals: [],
+          lastHeartbeat: Date.now(),
+        }),
+      )
+      expect(fs.readdirSync(dir)).toEqual(['window-w1.json'])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('drops only the unreadable entry, not its neighbours', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctm-reg-'))
+    try {
+      await Effect.runPromise(
+        writeWindowEntry(dir, {
+          windowId: 'good',
+          workspaceName: 'ws',
+          socketPath: '/tmp/s.sock',
+          terminals: [],
+          lastHeartbeat: Date.now(),
+        }),
+      )
+      fs.writeFileSync(getWindowEntryPath(dir, 'bad'), '{"truncated"')
+      const entries = await Effect.runPromise(
+        readAllWindowEntries(dir, 'self'),
+      )
+      expect(entries.map((e) => e.windowId)).toEqual(['good'])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('windowRegistry', () => {

@@ -40,20 +40,49 @@ export const getWindowEntryPath = (
   windowId: string,
 ): string => path.join(globalStoragePath, 'window-' + windowId + '.json')
 
+/**
+ * Publish this window's entry atomically.
+ *
+ * `writeFileSync` truncates before writing, so a reader in another window can
+ * observe a half-written file. Because a failed parse drops the whole entry,
+ * that showed up as the window's sessions blinking out of the panel and back
+ * every couple of seconds. Writing to a sibling and renaming means a reader
+ * sees either the old file or the new one, never a partial one.
+ */
 export const writeWindowEntry = (
   globalStoragePath: string,
   entry: WindowEntry,
 ): Effect.Effect<void, never> =>
   Effect.try(() => {
-    fs.writeFileSync(
-      getWindowEntryPath(globalStoragePath, entry.windowId),
-      JSON.stringify(entry),
-    )
+    const target = getWindowEntryPath(globalStoragePath, entry.windowId)
+    // Unique per window, and these calls are synchronous, so no two writes
+    // from this process can interleave on it.
+    const temporary = target + '.tmp'
+    fs.writeFileSync(temporary, JSON.stringify(entry))
+    fs.renameSync(temporary, target)
   }).pipe(
     Effect.catchAll((e) =>
       Effect.logWarning('writeWindowEntry failed: ' + String(e)),
     ),
   )
+
+/**
+ * Read one entry, retrying once on a parse failure.
+ *
+ * Belt-and-braces alongside the atomic write: a single retry costs nothing and
+ * covers any writer that has not been updated yet, rather than silently losing
+ * a window for a poll.
+ */
+const readEntry = (file: string): WindowEntry | undefined => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return JSON.parse(fs.readFileSync(file, 'utf8')) as WindowEntry
+    } catch {
+      // fall through and try once more
+    }
+  }
+  return undefined
+}
 
 export const readAllWindowEntries = (
   globalStoragePath: string,
@@ -71,11 +100,8 @@ export const readAllWindowEntries = (
         if (!file.startsWith('window-') || !file.endsWith('.json')) continue
         if (file === 'window-' + ownWindowId + '.json') continue
         try {
-          const content = fs.readFileSync(
-            path.join(globalStoragePath, file),
-            'utf8',
-          )
-          const entry = JSON.parse(content) as WindowEntry
+          const entry = readEntry(path.join(globalStoragePath, file))
+          if (entry === undefined) continue
           if (now - entry.lastHeartbeat > maxAge) continue
           if (
             ownWorkspaceFolderPath !== undefined &&
