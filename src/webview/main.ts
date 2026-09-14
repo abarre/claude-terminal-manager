@@ -109,8 +109,11 @@ const renderRow = (
     r1.appendChild(el('span', 'kbd', String(session.shortcut)))
   }
   r1.appendChild(el('span', 'name', session.title))
-  const age = ageOf(session.at, now)
-  if (age.length > 0) r1.appendChild(el('span', 'age', age))
+  if (session.at > 0) {
+    const age = el('span', 'age', ageOf(session.at, now))
+    age.dataset['at'] = String(session.at)
+    r1.appendChild(age)
+  }
   row.appendChild(r1)
 
   const showProject = options.showProject === true && session.project !== undefined
@@ -343,6 +346,7 @@ const render = (): void => {
   const isEmpty =
     view === 'tickets' ? model.tickets.length === 0 : groups.length === 0
 
+  const scroll = document.documentElement.scrollTop
   body.replaceChildren(
     isEmpty
       ? renderEmpty(view)
@@ -350,6 +354,16 @@ const render = (): void => {
         ? renderTickets(model, now, shortcutsEnabled)
         : renderGroups(groups, view, now, shortcutsEnabled),
   )
+  document.documentElement.scrollTop = scroll
+}
+
+/** Re-stamp the ages without touching the rest of the DOM. */
+const tickAges = (): void => {
+  const now = Date.now()
+  for (const node of document.querySelectorAll<HTMLElement>('.age')) {
+    const at = Number(node.dataset['at'])
+    if (Number.isFinite(at) && at > 0) node.textContent = ageOf(at, now)
+  }
 }
 
 // ---- events ----
@@ -455,15 +469,20 @@ body.addEventListener('contextmenu', (event) => {
   }
 })
 
+let lastSignature: string | undefined
+
 window.addEventListener('message', (event: MessageEvent<StateMessage>) => {
   if (event.data.type !== 'state') return
+  const signature = JSON.stringify(event.data)
+  if (signature === lastSignature) return
+  lastSignature = signature
   current = event.data
   render()
 })
 
-// Ages drift as time passes even when no session event arrives.
-setInterval(() => {
-  if (current !== undefined) render()
-}, 30_000)
+// Ages drift as time passes even when no session event arrives. Stamping the
+// text in place avoids a rebuild that would restart every spinner and drop
+// whatever the pointer is hovering.
+setInterval(tickAges, 30_000)
 
 vscode.postMessage({ type: 'ready' })
