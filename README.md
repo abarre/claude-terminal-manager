@@ -25,12 +25,63 @@ The extension registers hooks in `~/.claude/settings.json` and `~/.codex/hooks.j
 
 ### Sidebar Panel
 
-The extension adds a **Terminals** panel to two locations:
+The extension adds a **Terminals** panel to its own activity bar icon. Each row is
+a session: its title, how long since it last did anything, and — when something
+is pending — the line that matters, such as `Allow Bash: pnpm vitest run?`.
 
-- **Explorer sidebar** — nested under your file explorer
-- **Dedicated activity bar icon** — a standalone Agent Terminal Manager sidebar
+Rows sort so the ones waiting on you come first, and they carry a left amber rail
+so you can find them without reading. Projects sort the same way: a project with
+a session waiting on you outranks one that is merely running, which outranks an
+idle one.
 
-Both panels show the same live tree of terminals and sessions.
+Set `claudeTerminalManager.sidebar.density` to `compact` to drop the status line
+and get one line per session.
+
+#### Active, Recent, Tickets
+
+The panel has a tab strip at the top. Each tab groups by project:
+
+- **Active** — sessions whose process is still running, plus any plain terminals.
+- **Recent** — sessions that ended within the history window, dimmed, ordered by
+  the project touched most recently. Clicking one resumes it with
+  `claude --resume`.
+- **Tickets** — only present when `claudeTerminalManager.tickets.command` is set
+  and returns usable JSON.
+
+A project appears under both tabs when you have live work in it *and* finished
+sessions from earlier. Closing a session's terminal moves its row from
+**Active** to **Recent**, where it stays resumable. In **Recent**, the project
+this window has open is pinned to the top — it is the one you are most likely to
+want back.
+
+#### Sessions open in their own project's window
+
+Resuming a session, or pressing the **+** on a project header, opens the
+terminal in the VS Code window that owns that project rather than the window you
+clicked from. Three cases:
+
+1. **This window owns the folder** — the terminal opens here.
+2. **Another open window owns it** — the request is handed to that window over
+   the shared storage directory, and that window is activated.
+3. **No window has it open** — a window is launched for the folder, and it runs
+   the request as it activates.
+
+Requests are keyed by the *workspace folder* that will claim them (a session can
+run in a subdirectory of it), can only be claimed once, and expire after three
+minutes so a window that never opened cannot trigger a session later.
+
+#### Grouping by ticket instead
+
+The **Tickets** tab groups by workflow state, then ticket, then session, rather
+than by project. See [Ticket grouping](#ticket-grouping).
+
+#### Starting a session
+
+The **+** button in the panel title opens a terminal running `claude` in the
+**editor area**, not as another sidebar view. Hovering a project header gives it
+its own **+**, which starts a session in that project — in that project's window.
+See [`newSession.location`](#claudeterminalmanagernewsessionlocation) for where
+exactly the terminal lands.
 
 ### Session Tracking
 
@@ -41,16 +92,27 @@ Each CLI agent session (Claude Code, Codex) is tracked through its full lifecycl
 | **SessionStart** | A new agent process starts (claude or codex). The extension records the session ID, PID, working directory, and git branch. |
 | **UserPromptSubmit** | You sent a prompt. The session status moves to **running** and the prompt text appears as a subtitle in the sidebar. |
 | **PreToolUse** | Claude is about to use a tool (e.g. Bash, Read, Write). Running sessions show a leading activity indicator and put the current activity after the CLI name (e.g. "Codex Running: Bash — _topic_"). If the tool is `AskUserQuestion` or `ExitPlanMode`, the session is flagged as **needs attention**. |
-| **PostToolUse / PostToolUseFailure** | Interrupted tool executions (for example, a Bash process cancelled with Control-C) move the session back to **waiting for input** and clear the running activity indicator. Ordinary tool completions and failures are ignored. |
-| **Stop** | Claude finished responding and is waiting for your next prompt. The session is flagged as **needs attention**. |
+| **PermissionRequest** | Claude is blocked on a permission prompt (Bash approval, an edit, an MCP call). The session is flagged as **needs attention** and the sidebar shows what is being asked, e.g. "Allow Bash: pnpm test?". Unlike `PreToolUse`, which fires before the permission check, this only fires when Claude is genuinely waiting on you. |
+| **PostToolUse / PostToolUseFailure** | Interrupted tool executions (for example, a Bash process cancelled with Control-C) move the session back to **waiting for input** and clear the running activity indicator. Ordinary completions clear a permission prompt the user has just granted. |
+| **Stop / StopFailure** | The turn ended. If the payload still lists background agents or background shell tasks, the session stays **running** with a "N background tasks running" label — reporting "waiting for input" during those lulls would ping you on every pause between background phases. Otherwise the session is flagged as **needs attention**. `StopFailure` (a turn that died on an API error) takes the same path, so a failed turn never strands the session as running. |
+| **SubagentStop** | A background agent finished. The only event that refreshes the background-task count while the main loop sits at the prompt. When the last one finishes on a turn that had already ended, this is what hands the session back to you — nothing else fires. It never wakes a retired session or takes the attention dot off a finished turn, since it also fires for internal utility agents. |
+| **SessionEnd** | The session ended. Retires it immediately, instead of waiting for the pid reaper's next poll (which still covers a `kill -9` that fires no hook). |
 
 ### Session Status Indicators
 
-Sessions in the sidebar display visual indicators:
+Each row carries one indicator, coloured from your theme's chart palette:
 
-- **Spinning sync icon** (before the number) — **Running**: Claude or Codex is actively processing. The full "Running: _tool_" text follows the CLI name and precedes the topic.
-- **Filled circle** (before the number) — **Needs attention**: Claude has stopped and is waiting for input, or is asking a question. This is the initial indicator after a `Stop` or `AskUserQuestion` event.
-- **Hollow circle** (before the number) — **Seen / waiting for input**: The user has clicked the session to acknowledge it, but has not yet submitted a new prompt. This clears the "needs attention" flag while the session remains idle.
+| Indicator | State | Set by |
+|---|---|---|
+| Spinning teal ring | **Working** — a tool is running | `PreToolUse` |
+| Amber dot, amber rail | **Waiting on you** — a permission prompt, a question, or the end of a turn | `Stop`, `PermissionRequest`, `AskUserQuestion`, `ExitPlanMode` |
+| Violet dot | **Subagents still out** — the main loop is free but background agents are running | `Stop` with `background_tasks > 0` |
+| Hollow grey circle | **Parked** — idle, nothing pending | acknowledged, or a new prompt submitted |
+| Dimmed hollow circle | **Ended** — click to resume | `SessionEnd`, or a session from the history index |
+
+A waiting session stops asking for attention once you focus its terminal —
+unless a permission prompt is genuinely still on screen, which the extension
+knows from the blocking tool.
 
 ### Session Naming & Slugs
 
@@ -93,6 +155,9 @@ The current git branch is detected every 5 seconds and displayed next to the wor
 
 | Command | Description |
 |---------|-------------|
+| **New Claude Session** (+ icon) | Open a terminal running `claude` in the editor area |
+| **Resume Session** | Re-open a finished session with `claude --resume <id>` |
+| **Refresh Tickets and History** (refresh icon) | Re-run the tickets command and re-index finished sessions |
 | **Rename** (pencil icon) | Set a custom display name for a Claude session |
 | **Focus Terminal** (arrow icon) | Jump to the terminal running a local Claude session |
 | **Focus Remote Terminal** (arrow icon) | Focus a terminal in another VS Code window |
@@ -115,7 +180,7 @@ The current git branch is detected every 5 seconds and displayed next to the wor
 
 **Default:** `false`
 
-Controls whether plain (non-agent) terminals appear in the sidebar. When `false`, only terminals with an active agent session are shown. When `true`, all open terminals are listed — terminals without an agent session show with a generic terminal icon, while agent sessions use their Claude or Codex label without an additional CLI icon.
+Controls whether plain (non-agent) terminals appear in the panel. When `false`, only agent sessions are shown. When `true`, terminals with no session are listed under their project with a terminal glyph, below the sessions.
 
 ### `claudeTerminalManager.status.verboseToolNames`
 
@@ -127,7 +192,9 @@ Controls whether the currently running tool name appears after the CLI name. Whe
 
 **Default:** `true`
 
-Controls whether terminals from other VS Code windows appear in the sidebar. When enabled, the sidebar is split into sections: a **local** section for the current window and a **remote** section for each other open VS Code window. Each section header shows the workspace name and git branch. When disabled, only terminals from the current window are shown.
+Controls whether sessions from other VS Code windows appear in the panel. When enabled, they are grouped alongside local ones by project. When disabled, only sessions from the current window are shown.
+
+A window running an older version of the extension still appears — it simply publishes fewer fields, so its rows show less.
 
 ### `claudeTerminalManager.windowFocus.useMacOSAccessibility`
 
@@ -135,9 +202,84 @@ Controls whether terminals from other VS Code windows appear in the sidebar. Whe
 
 On macOS, activates a specific remote VS Code window through the native Accessibility interface instead of launching the `code` CLI. Enable Visual Studio Code under **System Settings → Privacy & Security → Accessibility** before turning this on. The extension requires exactly one VS Code window title to match the remote workspace name; otherwise it falls back to `code -r`.
 
+### `claudeTerminalManager.sidebar.density`
+
+**Default:** `comfortable`
+
+`comfortable` shows the status line under each session — the blocking question, the running tool, or your last prompt. `compact` hides it, giving one line per session.
+
+### `claudeTerminalManager.history.hours`
+
+**Default:** `24`
+
+How far back to list finished sessions under each project. Set to `0` to hide them entirely.
+
+The index comes from `~/.claude/projects/`, so it needs no configuration and works for every user. A session that is currently running is never also listed as history.
+
+### `claudeTerminalManager.newSession.location`
+
+**Default:** `editorMain`
+
+Where **New Claude Session** and **Resume** open their terminal.
+
+| Value | Where it lands |
+|---|---|
+| `editorMain` | The first editor group — the main area, never a split |
+| `editor` | Whichever editor group is active, which may itself be a split |
+| `beside` | Split beside the active editor group |
+| `panel` | The bottom terminal dock |
+
+This is the reason the extension opens sessions itself rather than deferring to the Claude extension's tab-bar button: that button calls its command with no argument, which its code maps to a split, and no setting exposes the choice.
+
+### `claudeTerminalManager.newSession.command`
+
+**Default:** `claude`
+
+The command run in a new session terminal. Resuming appends `--resume <id>`.
+
+### `claudeTerminalManager.tickets.command`
+
+**Default:** `""` (empty — the **Tickets** tab is hidden)
+
+<a id="ticket-grouping"></a>
+A shell command printing ticket JSON on stdout. When set, the panel offers a **Tickets** tab grouping sessions by workflow state, then ticket, then session. If the command fails or returns nothing usable, the tab disappears rather than showing an error.
+
+Sessions are matched to live ones by their Claude session UUID, so a running session lights up inside its ticket; every other row is a past session that resumes on click.
+
+Expected shape:
+
+```json
+[
+  {
+    "ticket": "sc-7465",
+    "etat": "In Development",
+    "titre": "expose origin TTFB in Server-Timing",
+    "url": "https://app.shortcut.com/org/story/7465",
+    "sessions": [
+      {
+        "id": "735a448d-3716-4845-8b87-012492256a17",
+        "nom": "Couchbase config replication",
+        "projet": "fstrz",
+        "fin": 1789370908474
+      }
+    ]
+  }
+]
+```
+
+The English key names `id` / `state` / `title` / `name` / `project` / `endedAt` are accepted too, so any script emitting either shape works without a wrapper.
+
+### `claudeTerminalManager.tickets.refreshSeconds`
+
+**Default:** `60` (minimum `15`)
+
+How often to re-run the tickets command while the panel is visible. The command is never run on the render path.
+
 ## Keyboard Shortcuts
 
-The extension provides shortcuts to quickly focus terminals and sessions by their sidebar position.
+The extension provides shortcuts to focus sessions by their position in the panel.
+
+When enabled, the first ten rows carry a small number badge, and `Ctrl+Alt+<n>` focuses the row showing that number. Because the numbers are assigned in the order the panel renders — sessions waiting on you first — the badge you see is always the key that focuses it. Finished sessions are never numbered: a keystroke that spawns a terminal is not what the binding means.
 
 ### Enabling Shortcuts
 
@@ -151,7 +293,7 @@ Shortcuts are disabled by default. Enable them in Settings:
 
 | Shortcut | Action |
 |----------|--------|
-| Ctrl+Alt+0 | Focus Session 0 (first item in sidebar) |
+| Ctrl+Alt+0 | Focus Session 0 (first row in the panel) |
 | Ctrl+Alt+1 | Focus Session 1 |
 | ... | ... |
 | Ctrl+Alt+9 | Focus Session 9 |

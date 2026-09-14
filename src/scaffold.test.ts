@@ -167,26 +167,23 @@ describe('package.json manifest (T1.2)', () => {
   })
 
   describe('contributes.menus', () => {
-    const menuEntries = (
-      (contributes['menus'] as Json)['view/item/context'] as Json[]
-    )
+    const menus = contributes['menus'] as Record<string, Json[]>
+    const titleEntries = menus['view/title'] ?? []
     const findEntry = (id: string): Json | undefined =>
-      menuEntries.find((e) => e['command'] === id)
+      titleEntries.find((e) => e['command'] === id)
 
-    it('has at least 2 entries', () => {
-      expect(menuEntries.length).toBeGreaterThanOrEqual(2)
+    it('has at least 2 title entries', () => {
+      expect(titleEntries.length).toBeGreaterThanOrEqual(2)
     })
 
-    it('renameSession is NOT present in inline menus', () => {
-      expect(findEntry('claudeTerminalManager.renameSession')).toBeUndefined()
+    it('offers the new session action from the view title', () => {
+      expect(findEntry('claudeTerminalManager.newSession')).toBeDefined()
     })
 
-    it('focusTerminal is NOT present in inline menus', () => {
-      expect(findEntry('claudeTerminalManager.focusTerminal')).toBeUndefined()
-    })
-
-    it('focusRemoteTerminal is NOT present in inline menus', () => {
-      expect(findEntry('claudeTerminalManager.focusRemoteTerminal')).toBeUndefined()
+    // The panel is a webview: rows are ours to draw, so VS Code contributes no
+    // per-item menus and row actions live in the webview instead.
+    it('contributes no view/item/context menus', () => {
+      expect(menus['view/item/context']).toBeUndefined()
     })
   })
 
@@ -270,11 +267,11 @@ describe('package.json manifest (T1.2)', () => {
     it('every menu command appears in contributes.commands', () => {
       const commands = (contributes['commands'] as Json[])
       const commandIds = new Set(commands.map((c) => c['command'] as string))
-      const menuEntries = (
-        (contributes['menus'] as Json)['view/item/context'] as Json[]
-      )
-      for (const entry of menuEntries) {
-        expect(commandIds.has(entry['command'] as string)).toBe(true)
+      const menus = contributes['menus'] as Record<string, Json[]>
+      for (const entries of Object.values(menus)) {
+        for (const entry of entries) {
+          expect(commandIds.has(entry['command'] as string)).toBe(true)
+        }
       }
     })
   })
@@ -374,8 +371,15 @@ describe('individual focus commands (T6.1)', () => {
     }
   })
 
-  it('(b) focusTerminalByIndex is NOT in contributes.commands', () => {
-    expect(findCmd('claudeTerminalManager.focusTerminalByIndex')).toBeUndefined()
+  // It is registered in code and listed in commandsToSkipShell, so it has to be
+  // declared; it is hidden from the palette instead, since it needs an argument.
+  it('(b) focusTerminalByIndex is declared but hidden from the palette', () => {
+    expect(findCmd('claudeTerminalManager.focusTerminalByIndex')).toBeDefined()
+    const palette = ((contributes['menus'] as Json)['commandPalette'] as Json[])
+    const entry = palette.find(
+      (e) => e['command'] === 'claudeTerminalManager.focusTerminalByIndex',
+    )
+    expect(entry?.['when']).toBe('false')
   })
 
   it('(c) keybindings use individual commands (not focusTerminalByIndex)', () => {

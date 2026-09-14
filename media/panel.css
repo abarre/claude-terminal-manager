@@ -1,0 +1,570 @@
+/*
+ * Panel styles. Everything chromatic comes from VS Code theme variables so the
+ * panel follows whatever theme the user runs; only the status hues are ours,
+ * and those are taken from the chart colours, which every theme defines.
+ */
+
+:root {
+  --ctm-run: var(--vscode-charts-green, #4ec9b0);
+  --ctm-attn: var(--vscode-charts-yellow, #f2b33d);
+  --ctm-bg-task: var(--vscode-charts-purple, #b180f0);
+  --ctm-idle: var(--vscode-descriptionForeground, #8a93a1);
+  --ctm-line: var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  --ctm-row-gap: 3px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0 0 10px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  line-height: 1.35;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+/*
+ * Rows, project headers and section headers are focusable divs rather than
+ * <button>s, because a button may not contain another button and every one of
+ * them carries inline actions. They still need to read as clickable.
+ */
+button,
+[role='button'] {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* ---------- view switch ---------- */
+
+.seg {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--ctm-line);
+  position: sticky;
+  top: 0;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  z-index: 2;
+}
+
+.seg button[hidden] {
+  display: none;
+}
+
+.seg button {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  color: var(--vscode-descriptionForeground);
+}
+
+.seg button:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-list-hoverBackground);
+}
+
+.seg button[aria-selected='true'] {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+  border-color: var(--ctm-line);
+}
+
+/* ---------- group headers ---------- */
+
+.grp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 4px;
+  width: 100%;
+  text-align: left;
+}
+
+.grp:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.grp .chev {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  opacity: 0.7;
+  transition: transform 0.12s ease;
+}
+
+.grp[aria-expanded='false'] .chev {
+  transform: rotate(-90deg);
+}
+
+.grp .gname {
+  font-weight: 600;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: none;
+  max-width: 60%;
+}
+
+.grp .gmeta {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10.5px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  opacity: 0.85;
+}
+
+.grp .count {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 9px;
+  padding: 0 6px;
+  flex: none;
+}
+
+/* ---------- tiers and dividers ---------- */
+
+.tier {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+
+.tier {
+  padding: 9px 10px 4px 8px;
+}
+
+.tier::after,
+
+.tier .tdot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--ctm-idle);
+}
+
+/* ---------- ticket header ---------- */
+
+.tkt {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 4px 10px 3px 22px;
+  width: 100%;
+  text-align: left;
+}
+
+.tkt:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.tkt .tid {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  color: var(--vscode-textLink-foreground);
+  flex: none;
+}
+
+.tkt.linked .tid {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.tkt .ttl {
+  font-size: 11.5px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- session row ---------- */
+
+.row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 7px;
+  padding: var(--ctm-row-gap) 10px var(--ctm-row-gap) 3px;
+  position: relative;
+  border-left: 2px solid transparent;
+  width: 100%;
+  text-align: left;
+}
+
+.row.indent {
+  padding-left: 19px;
+}
+
+.row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.row.attention {
+  border-left-color: var(--ctm-attn);
+}
+
+.row .ind {
+  grid-row: 1 / span 3;
+  display: grid;
+  place-items: center;
+  align-self: start;
+  padding-top: 3px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.dot.idle {
+  border: 1.5px solid var(--ctm-idle);
+}
+
+.dot.ended {
+  border: 1.5px solid var(--ctm-idle);
+  opacity: 0.5;
+}
+
+.dot.attention {
+  background: var(--ctm-attn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ctm-attn) 22%, transparent);
+}
+
+.dot.background {
+  background: var(--ctm-bg-task);
+}
+
+.spin {
+  width: 11px;
+  height: 11px;
+  color: var(--ctm-run);
+}
+
+.spin circle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-dasharray: 17 9;
+  transform-origin: 50% 50%;
+  animation: ctm-rot 1.05s linear infinite;
+}
+
+@keyframes ctm-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pulse {
+  animation: ctm-breathe 1.9s ease-in-out infinite;
+}
+
+@keyframes ctm-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin circle,
+  .pulse {
+    animation: none;
+  }
+}
+
+.r1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.r1 .name {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.row.ended .name {
+  color: var(--vscode-descriptionForeground);
+}
+
+.r1 .age {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.r1 .kbd {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 9.5px;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+  border-radius: 3px;
+  padding: 0 4px;
+  flex: none;
+}
+
+.r2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10.5px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.85;
+}
+
+.r2 .repo {
+  flex: none;
+}
+
+.r2 .brn {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.r2 .sep {
+  flex: none;
+  opacity: 0.5;
+}
+
+.r3 {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+.r3 .lead {
+  flex: none;
+  font-weight: 600;
+}
+
+.r3 .txt {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.row.attention .r3 .lead {
+  color: var(--ctm-attn);
+}
+
+.row.running .r3 .lead {
+  color: var(--ctm-run);
+}
+
+.row.background .r3 .lead {
+  color: var(--ctm-bg-task);
+}
+
+body.compact .r3 {
+  display: none;
+}
+
+body.compact {
+  --ctm-row-gap: 2px;
+}
+
+/* ---------- hover actions ---------- */
+
+.acts {
+  position: absolute;
+  right: 4px;
+  top: 2px;
+  display: none;
+  gap: 1px;
+}
+
+.row:hover .acts {
+  display: flex;
+}
+
+.acts button {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  color: var(--vscode-descriptionForeground);
+}
+
+.acts button:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.acts svg {
+  width: 13px;
+  height: 13px;
+}
+
+.row.ended .acts button.resume {
+  color: var(--ctm-run);
+}
+
+/* ---------- empty state ---------- */
+
+.empty {
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.empty p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.5;
+}
+
+.empty .cta {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.empty .cta:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.empty .cta svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* plain terminals, shown only when showNonClaudeTerminals is on */
+.row.terminal .name {
+  color: var(--vscode-descriptionForeground);
+}
+
+.term {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  color: var(--ctm-idle);
+}
+
+.term svg {
+  width: 12px;
+  height: 12px;
+}
+
+/*
+ * Icons never take the click themselves: it keeps the event target on the
+ * button or row that carries the data attributes, whatever the user aims at.
+ */
+.acts svg,
+.add svg,
+.grp .chev,
+.term svg,
+.empty .cta svg,
+.seg button svg {
+  pointer-events: none;
+}
+
+/*
+ * Inline actions overlay the row's right edge, which is where the age sits.
+ * Hide the age while hovering rather than letting the two collide — the same
+ * trade VS Code's own tree rows make.
+ */
+.row:hover .age {
+  visibility: hidden;
+}
+
+.acts {
+  background: var(--vscode-list-hoverBackground);
+  border-radius: 4px;
+}
+
+/* Per-project new-session button, revealed on hover like the row actions. */
+.grp .add {
+  width: 18px;
+  height: 18px;
+  display: none;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+}
+
+.grp:hover .add,
+.grp:focus-within .add {
+  display: grid;
+}
+
+.grp .add:hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.grp .add svg {
+  width: 14px;
+  height: 14px;
+}

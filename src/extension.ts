@@ -12,9 +12,19 @@ import { correlateSession } from './terminalCorrelator.js'
 import { ClaudeTerminalProvider } from './treeProvider.js'
 import type { SessionNode, TerminalNode, RemoteTerminalNode, SectionNode } from './treeProvider.js'
 import {
+  getNewSessionCommand,
+  getNewSessionLocation,
   getUseMacOSAccessibilityForWindowFocus,
   getVerboseToolNames,
 } from './settings.js'
+import { PanelViewProvider } from './panelProvider.js'
+import { findSessionCwd } from './sessionHistory.js'
+import {
+  claimSessionRequest,
+  isSessionRequestFile,
+  pruneStaleSessionRequests,
+  writeSessionRequest,
+} from './sessionIpc.js'
 import { resolveSessionSlug, readLatestSlug } from './slugResolver.js'
 import {
   writeWindowEntry,
@@ -31,6 +41,24 @@ import {
 } from './focusIpc.js'
 
 const HOOK_MARKER = '--vscode-ctm'
+
+// Hook events the reporter handles. PermissionRequest tells a blocked session
+// from a busy one; StopFailure keeps a turn that died on an API error from
+// stranding as running; SubagentStop is the only event that refreshes the
+// background-task count between turns; SessionEnd retires a session without
+// waiting for the pid reaper's next poll.
+const CLAUDE_HOOK_EVENTS = [
+  'SessionStart',
+  'SessionEnd',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PermissionRequest',
+  'Stop',
+  'StopFailure',
+  'SubagentStop',
+]
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
 const CODEX_HOOKS_PATH = path.join(os.homedir(), '.codex', 'hooks.json')
 const MACOS_ACCESSIBILITY_FOCUS_SCRIPT = `
@@ -90,14 +118,7 @@ function writeClaudeHooks(reporterPath: string): void {
   }
 
   const hooks: any = settings['hooks'] ?? {}
-  const events = [
-    'SessionStart',
-    'UserPromptSubmit',
-    'PreToolUse',
-    'PostToolUse',
-    'PostToolUseFailure',
-    'Stop',
-  ]
+  const events = CLAUDE_HOOK_EVENTS
 
   // Single-quoted path handles spaces in the reporter path
   const quoted = `'${reporterPath}'`
@@ -583,34 +604,19 @@ export function activate(context: vscode.ExtensionContext): void {
   providerRef = provider
   context.subscriptions.push(provider)
 
-  const treeView = vscode.window.createTreeView('claudeTerminalManagerPanel', {
-    treeDataProvider: provider,
-    showCollapseAll: true,
-  })
-  context.subscriptions.push(treeView)
-
-  let selectionClearScheduled = false
-  context.subscriptions.push(
-    treeView.onDidChangeSelection((event: vscode.TreeViewSelectionChangeEvent<unknown>) => {
-      if (event.selection.length > 0 && !selectionClearScheduled) {
-        selectionClearScheduled = true
-        setTimeout(() => {
-          selectionClearScheduled = false
-          provider.refresh()
-        }, 100)
-      }
-    }),
+  const panel = new PanelViewProvider(
+    context.extensionUri,
+    provider,
+    context.workspaceState,
+    (message) => outputChannel.appendLine(`[CTM] ${message}`),
   )
-
-  const localDecorationProvider: vscode.FileDecorationProvider = {
-    provideFileDecoration(uri: vscode.Uri) {
-      return uri.scheme === 'ctm'
-        ? { color: new vscode.ThemeColor('terminal.ansiGreen') }
-        : undefined
-    },
-  }
   context.subscriptions.push(
-    vscode.window.registerFileDecorationProvider(localDecorationProvider),
+    vscode.window.registerWebviewViewProvider(
+      PanelViewProvider.viewType,
+      panel,
+      { webviewOptions: { retainContextWhenHidden: true } },
+    ),
+    { dispose: () => panel.dispose() },
   )
 
   // Write initial entry and prune stale/duplicate entries from crashed or reloaded windows
@@ -793,17 +799,6 @@ export function activate(context: vscode.ExtensionContext): void {
   watcher.onDidDelete(onRegistryChange)
   context.subscriptions.push(watcher)
 
-  const expandAllDisposable = vscode.commands.registerCommand(
-    'claudeTerminalManager.expandAll',
-    async () => {
-      const sections = provider.getRootSections()
-      for (const section of sections) {
-        await treeView.reveal(section, { expand: true, select: false })
-      }
-    },
-  )
-  context.subscriptions.push(expandAllDisposable)
-
   const focusDisposable = vscode.commands.registerCommand(
     'claudeTerminalManager.focusTerminal',
     (node: SessionNode | TerminalNode) => {
@@ -831,43 +826,27 @@ export function activate(context: vscode.ExtensionContext): void {
   )
   context.subscriptions.push(focusDisposable)
 
+  // Resolved against the model the panel last rendered, so the number the user
+  // sees on a row is the number that focuses it.
   const focusByIndex = (index: number): void => {
-    outputChannel.appendLine(`[CTM] focusByIndex: index=${index}`)
-    const node = provider.getChildByIndex(index)
+    const target = panel.resolveShortcut(index)
     outputChannel.appendLine(
-      `[CTM] focusByIndex: node kind=${node?.kind ?? 'undefined'}`,
+      `[CTM] focusByIndex: index=${index} target=${target?.kind ?? 'none'}`,
     )
-    if (node === undefined) return
-
-    if (node.kind === 'terminal') {
-      node.terminal.show(false)
-      return
-    }
-    if (node.kind === 'session') {
-      if (node.terminal !== undefined) {
-        node.terminal.show(false)
-      } else {
-        void vscode.window.showInformationMessage(
-          'Terminal not yet correlated — open a terminal manually',
-        )
-      }
-      if (node.record.needsAttention) {
-        provider.clearAttentionLocal(node.record.sessionId)
-        runtime.runFork(
-          Effect.gen(function* () {
-            const sm = yield* SessionManager
-            yield* sm.clearAttention(node.record.sessionId)
-          }),
-        )
+    if (target === undefined) return
+    if (target.kind === 'terminal') {
+      for (const terminal of vscode.window.terminals) {
+        if (provider.getTerminalPid(terminal) === target.pid) {
+          terminal.show(false)
+          return
+        }
       }
       return
     }
-    if (node.kind === 'remoteTerminal') {
-      void vscode.commands.executeCommand(
-        'claudeTerminalManager.focusRemoteTerminal',
-        node,
-      )
-    }
+    void vscode.commands.executeCommand(
+      'claudeTerminalManager.focusSession',
+      target.id,
+    )
   }
 
   for (let idx = 0; idx <= 9; idx++) {
@@ -918,6 +897,314 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   )
   context.subscriptions.push(renameDisposable)
+
+  /**
+   * Resolve the folder a new session should start in. A single-folder
+   * workspace launches straight away; only a genuinely ambiguous multi-root
+   * workspace is worth a prompt.
+   */
+  const pickWorkingDirectory = async (
+    project: string | undefined,
+  ): Promise<string | undefined> => {
+    const folders = vscode.workspace.workspaceFolders ?? []
+    if (project !== undefined && project.length > 0) {
+      const named = folders.find((f) => f.name === project)
+      if (named !== undefined) return named.uri.fsPath
+      const session = provider
+        .getSessions()
+        .find((sess) => sess.cwd !== undefined && sess.cwd.endsWith(`/${project}`))
+      if (session?.cwd !== undefined) return session.cwd
+    }
+    if (folders.length === 0) return undefined
+    if (folders.length === 1) return folders[0]!.uri.fsPath
+    const picked = await vscode.window.showWorkspaceFolderPick({
+      placeHolder: 'Start a Claude session in which folder?',
+    })
+    return picked?.uri.fsPath
+  }
+
+  /**
+   * Open a terminal for an agent session.
+   *
+   * Defaults to the editor area rather than the panel: the official extension
+   * puts Claude in a sidebar view, and the whole point of this button is to get
+   * a real terminal in the main part of the window.
+   */
+  const openAgentTerminal = (
+    name: string,
+    cwd: string | undefined,
+    commandLine: string,
+  ): vscode.Terminal => {
+    const where = getNewSessionLocation()
+    // `undefined` would defer to terminal.integrated.defaultLocation, which is
+    // not the same as asking for the panel — so every branch is explicit.
+    const location: vscode.TerminalOptions['location'] =
+      where === 'panel'
+        ? vscode.TerminalLocation.Panel
+        : where === 'beside'
+          ? { viewColumn: vscode.ViewColumn.Beside }
+          : where === 'editorMain'
+            ? { viewColumn: vscode.ViewColumn.One }
+            : { viewColumn: vscode.ViewColumn.Active }
+    outputChannel.appendLine(
+      `[CTM] openAgentTerminal: name="${name}" location=${where} ` +
+        `cwd=${cwd ?? 'none'} command="${commandLine}"`,
+    )
+    const terminal = vscode.window.createTerminal({
+      name,
+      ...(cwd !== undefined ? { cwd } : {}),
+      location,
+    })
+    terminal.show(false)
+    terminal.sendText(commandLine)
+    return terminal
+  }
+
+  const newSessionDisposable = vscode.commands.registerCommand(
+    'claudeTerminalManager.newSession',
+    async (project?: unknown, folder?: unknown) => {
+      // A view/title button passes its own context object as the first
+      // argument, so only trust a real string here.
+      const named = typeof project === 'string' ? project : undefined
+      const known = typeof folder === 'string' ? folder : undefined
+      outputChannel.appendLine(
+        `[CTM] newSession invoked: project=${named ?? 'none'} folder=${known ?? 'none'}`,
+      )
+      try {
+        // A project row knows its folder, so the session can be routed to the
+        // window that owns it rather than landing wherever we happen to be.
+        if (known !== undefined) {
+          openSessionInProject(known, undefined)
+          return
+        }
+        const cwd = await pickWorkingDirectory(named)
+        const name = cwd !== undefined ? path.basename(cwd) : 'claude'
+        openAgentTerminal(name, cwd, getNewSessionCommand())
+      } catch (error) {
+        outputChannel.appendLine(`[CTM] newSession failed: ${String(error)}`)
+        void vscode.window.showErrorMessage(
+          `Could not start a Claude session: ${String(error)}`,
+        )
+      }
+    },
+  )
+  context.subscriptions.push(newSessionDisposable)
+
+  const openLocally = (cwd: string, sessionId: string | undefined): void => {
+    const command = getNewSessionCommand()
+    openAgentTerminal(
+      path.basename(cwd),
+      cwd,
+      sessionId === undefined ? command : `${command} --resume ${sessionId}`,
+    )
+  }
+
+  /** Does this window own `cwd`? True for the folder itself or anything under it. */
+  const ownsFolder = (cwd: string): boolean =>
+    (vscode.workspace.workspaceFolders ?? []).some(
+      (folder) =>
+        cwd === folder.uri.fsPath ||
+        cwd.startsWith(folder.uri.fsPath + path.sep),
+    )
+
+  /**
+   * Open a session in the window that owns the project, not necessarily this
+   * one — a session belongs beside the code it is working on.
+   *
+   * Three cases: we own the folder; another open window owns it; nobody has it
+   * open, so a window is launched and claims the request as it activates.
+   */
+  const openSessionInProject = (
+    cwd: string,
+    sessionId: string | undefined,
+  ): void => {
+    const label = sessionId === undefined ? 'new session' : sessionId.slice(0, 8)
+
+    if (ownsFolder(cwd)) {
+      openLocally(cwd, sessionId)
+      return
+    }
+
+    const target = provider.getRemoteWindows().find(
+      (entry): entry is WindowEntry & { workspaceFolderPath: string } =>
+        entry.workspaceFolderPath !== undefined &&
+        (cwd === entry.workspaceFolderPath ||
+          cwd.startsWith(entry.workspaceFolderPath + path.sep)),
+    )
+    if (target !== undefined) {
+      outputChannel.appendLine(
+        `[CTM] openSessionInProject: handing ${label} to window ` +
+          `"${target.workspaceName}" (${target.workspaceFolderPath})`,
+      )
+      writeSessionRequest(
+        globalStoragePath,
+        target.workspaceFolderPath,
+        cwd,
+        sessionId,
+      )
+      activateWindow(target.workspaceFolderPath, target.workspaceName)
+      return
+    }
+
+    outputChannel.appendLine(
+      `[CTM] openSessionInProject: opening a window for ${cwd} (${label})`,
+    )
+    // `code <cwd>` opens a window rooted at cwd, so cwd is also its key.
+    if (!writeSessionRequest(globalStoragePath, cwd, cwd, sessionId)) {
+      openLocally(cwd, sessionId)
+      return
+    }
+    childProcess.execFile(codeCli, [cwd], (err) => {
+      if (err === null) return
+      outputChannel.appendLine(
+        `[CTM] could not open a window for ${cwd}: ${err.message}; ` +
+          'opening here instead',
+      )
+      // Reclaim our own request so it cannot fire later somewhere else.
+      claimSessionRequest(globalStoragePath, [cwd])
+      openLocally(cwd, sessionId)
+    })
+  }
+
+  const resumeSessionDisposable = vscode.commands.registerCommand(
+    'claudeTerminalManager.resumeSession',
+    (sessionId: string) => {
+      // A session that is already live is focused, not resumed twice.
+      const existing = provider.getTerminalForSession(sessionId)
+      if (existing !== undefined) {
+        existing.show(false)
+        return
+      }
+      const cwd = findSessionCwd(sessionId, provider.getKnownCwds())
+      if (cwd === undefined) {
+        void vscode.window.showWarningMessage(
+          'Could not locate the folder this session ran in.',
+        )
+        return
+      }
+      openSessionInProject(cwd, sessionId)
+    },
+  )
+  context.subscriptions.push(resumeSessionDisposable)
+
+  const focusSessionDisposable = vscode.commands.registerCommand(
+    'claudeTerminalManager.focusSession',
+    (sessionId: string) => {
+      const terminal = provider.getTerminalForSession(sessionId)
+      outputChannel.appendLine(
+        `[CTM] focusSession: ${sessionId.slice(0, 8)} local=${terminal !== undefined}`,
+      )
+      if (terminal !== undefined) {
+        terminal.show(false)
+      } else {
+        const remotes = provider.getRemoteSessionInputs()
+        const remote = remotes.find((r) => r.sessionId === sessionId)
+        outputChannel.appendLine(
+          `[CTM] focusSession: ${remotes.length} remote session(s) known; ` +
+            `match=${remote === undefined ? 'none' : `${remote.workspaceName} terminal="${remote.terminalName}" folder=${remote.workspaceFolderPath ?? 'none'} pid=${remote.terminalPid ?? 'none'}`}`,
+        )
+        if (remote !== undefined) {
+          // workspaceFolderPath and pid are what let the target window actually
+          // be activated and the right terminal revealed inside it.
+          void vscode.commands.executeCommand(
+            'claudeTerminalManager.focusRemoteTerminal',
+            {
+              kind: 'remoteTerminal',
+              windowId: remote.windowId,
+              workspaceName: remote.workspaceName,
+              ...(remote.workspaceFolderPath !== undefined
+                ? { workspaceFolderPath: remote.workspaceFolderPath }
+                : {}),
+              terminalName: remote.terminalName,
+              socketPath: remote.socketPath,
+              ...(remote.terminalPid !== undefined
+                ? { pid: remote.terminalPid }
+                : {}),
+              session: { sessionId: remote.sessionId },
+            },
+          )
+          return
+        }
+        void vscode.window.showInformationMessage(
+          'Terminal not yet correlated — open a terminal manually',
+        )
+      }
+      const record = provider
+        .getSessions()
+        .find((sess) => sess.sessionId === sessionId)
+      if (record?.needsAttention === true) {
+        provider.clearAttentionLocal(sessionId)
+        runtime.runFork(
+          Effect.gen(function* () {
+            const sm = yield* SessionManager
+            yield* sm.clearAttention(sessionId)
+          }),
+        )
+      }
+    },
+  )
+  context.subscriptions.push(focusSessionDisposable)
+
+  const closeSessionDisposable = vscode.commands.registerCommand(
+    'claudeTerminalManager.closeSession',
+    (sessionId: string) => {
+      const record = provider
+        .getSessions()
+        .find((sess) => sess.sessionId === sessionId)
+      const terminal = provider.getTerminalForSession(sessionId)
+      if (terminal !== undefined) {
+        terminal.dispose()
+        return
+      }
+      if (record === undefined) return
+      runtime.runFork(
+        Effect.gen(function* () {
+          const sm = yield* SessionManager
+          yield* sm.processEvent({
+            event: 'session_end',
+            session_id: record.sessionId,
+            pid: record.pid,
+            source: record.source,
+          })
+        }),
+      )
+    },
+  )
+  context.subscriptions.push(closeSessionDisposable)
+
+  const renameByIdDisposable = vscode.commands.registerCommand(
+    'claudeTerminalManager.renameSessionById',
+    async (sessionId: string) => {
+      const record = provider
+        .getSessions()
+        .find((sess) => sess.sessionId === sessionId)
+      const currentName =
+        context.workspaceState.get<string>('session:name:' + sessionId) ??
+        record?.slug ??
+        record?.customName ??
+        'Claude'
+      const newName = await vscode.window.showInputBox({
+        prompt: 'Enter session name',
+        value: currentName,
+      })
+      if (newName === undefined) return
+      await context.workspaceState.update(
+        'session:name:' + sessionId,
+        newName.length > 0 ? newName : undefined,
+      )
+      provider.refresh()
+    },
+  )
+  context.subscriptions.push(renameByIdDisposable)
+
+  const refreshTicketsDisposable = vscode.commands.registerCommand(
+    'claudeTerminalManager.refreshTickets',
+    async () => {
+      await panel.refreshTickets()
+      await panel.refreshHistory()
+    },
+  )
+  context.subscriptions.push(refreshTicketsDisposable)
 
   const resetDisposable = vscode.commands.registerCommand(
     'claudeTerminalManager.resetState',
@@ -1148,11 +1435,38 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  /**
+   * Run a session request handed to this window by another one — or left behind
+   * by the window that launched us, when no window had the project open.
+   */
+  const handleSessionRequest = (): void => {
+    const folders = (vscode.workspace.workspaceFolders ?? []).map(
+      (folder) => folder.uri.fsPath,
+    )
+    if (folders.length === 0) return
+    const request = claimSessionRequest(globalStoragePath, folders)
+    if (request === undefined) return
+    outputChannel.appendLine(
+      `[CTM] Session request claimed: ` +
+        `${request.sessionId?.slice(0, 8) ?? 'new session'} in ${request.cwd}`,
+    )
+    // We own this folder, so this resolves to a local terminal.
+    openLocally(request.cwd, request.sessionId)
+  }
+
+  // A window opened to service a request finds it waiting on activation.
+  pruneStaleSessionRequests(globalStoragePath)
+  handleSessionRequest()
+
   let focusDirWatcher: fs.FSWatcher | undefined
   try {
     focusDirWatcher = fs.watch(globalStoragePath, (_event, filename) => {
       if (filename === focusFileName) {
         handleFocusRequest()
+        return
+      }
+      if (filename !== null && isSessionRequestFile(filename)) {
+        handleSessionRequest()
       }
     })
     outputChannel.appendLine(
@@ -1170,8 +1484,16 @@ export function activate(context: vscode.ExtensionContext): void {
   })
 
   const configDisposable = vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('claudeTerminalManager')) {
-      provider.refresh()
+    if (!e.affectsConfiguration('claudeTerminalManager')) return
+    provider.refresh()
+    // These two are backed by work done off the render path, so a settings
+    // change has to re-run them or the panel keeps showing the old answer
+    // until a timer happens to fire.
+    if (e.affectsConfiguration('claudeTerminalManager.tickets')) {
+      void panel.refreshTickets()
+    }
+    if (e.affectsConfiguration('claudeTerminalManager.history')) {
+      void panel.refreshHistory()
     }
   })
   context.subscriptions.push(configDisposable)

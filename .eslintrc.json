@@ -4,9 +4,14 @@
   "parserOptions": {
     "ecmaVersion": 2022,
     "sourceType": "module",
-    "project": "./tsconfig.json"
+    "project": [
+      "./tsconfig.json",
+      "./src/webview/tsconfig.json"
+    ]
   },
-  "plugins": ["@typescript-eslint"],
+  "plugins": [
+    "@typescript-eslint"
+  ],
   "extends": [
     "eslint:recommended",
     "plugin:@typescript-eslint/recommended",
@@ -17,9 +22,33 @@
     "@typescript-eslint/explicit-module-boundary-types": "off",
     "@typescript-eslint/no-unused-vars": [
       "error",
-      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_"
+      }
     ],
     "no-console": "warn"
   },
-  "ignorePatterns": ["out/", "node_modules/", "vitest.config.ts", "src/**/*.test.ts"]
+  "ignorePatterns": [
+    "out/",
+    "node_modules/",
+    "vitest.config.ts",
+    "src/**/*.test.ts"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "src/webview/**/*.ts"
+      ],
+      "parserOptions": {
+        "project": [
+          "./src/webview/tsconfig.json"
+        ]
+      },
+      "env": {
+        "browser": true,
+        "node": false
+      }
+    }
+  ]
 }

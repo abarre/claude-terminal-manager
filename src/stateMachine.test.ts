@@ -773,3 +773,259 @@ describe('source field (T5.2)', () => {
     expect(ended.source).toBe('codex')
   })
 })
+
+describe('permission_request', () => {
+  const blocked = () =>
+    transitionSession(createSession(makeStart()), {
+      event: 'permission_request',
+      session_id: 'test-session',
+      tool_name: 'Bash',
+      detail: 'Allow Bash: rm -rf build?',
+      source: 'claude',
+    })
+
+  it('flags attention and records the blocking tool', () => {
+    const record = blocked()
+    expect(record.status).toBe('running')
+    expect(record.needsAttention).toBe(true)
+    expect(record.activeBlockingTool).toBe('Bash')
+    expect(record.statusLabel).toBe('Allow Bash: rm -rf build?')
+  })
+
+  it('falls back to the tool name when no detail is supplied', () => {
+    const record = transitionSession(createSession(makeStart()), {
+      event: 'permission_request',
+      session_id: 'test-session',
+      tool_name: 'Write',
+      source: 'claude',
+    })
+    expect(record.statusLabel).toBe('Permission: Write')
+  })
+
+  it('is retired by the tool actually running', () => {
+    const record = transitionSession(blocked(), {
+      event: 'tool_completed',
+      session_id: 'test-session',
+      tool_name: 'Bash',
+      source: 'claude',
+    })
+    expect(record.needsAttention).toBe(false)
+    expect(record.activeBlockingTool).toBeUndefined()
+    expect(record.statusLabel).toBeUndefined()
+    expect(record.status).toBe('running')
+  })
+
+  it('is not retired by an unrelated tool finishing in the same block', () => {
+    // Parallel tool calls: an auto-approved Read completing says nothing
+    // about a Bash permission prompt still on screen.
+    const record = transitionSession(blocked(), {
+      event: 'tool_completed',
+      session_id: 'test-session',
+      tool_name: 'Read',
+      source: 'claude',
+    })
+    expect(record.needsAttention).toBe(true)
+    expect(record.activeBlockingTool).toBe('Bash')
+  })
+
+  it('keeps the background label when the granted tool finishes', () => {
+    const blockedWithWork = { ...blocked(), backgroundTasks: 2 }
+    const record = transitionSession(blockedWithWork, {
+      event: 'tool_completed',
+      session_id: 'test-session',
+      tool_name: 'Bash',
+      source: 'claude',
+    })
+    expect(record.statusLabel).toBe('2 background tasks running')
+  })
+
+  it('creates a blocked session when the start event was missed', () => {
+    const record = createSessionFromEvent({
+      event: 'permission_request',
+      session_id: 'orphan',
+      tool_name: 'Edit',
+      source: 'claude',
+    })
+    expect(record.needsAttention).toBe(true)
+    expect(record.activeBlockingTool).toBe('Edit')
+  })
+})
+
+describe('background task gating', () => {
+  const running = () =>
+    transitionSession(createSession(makeStart()), {
+      event: 'user_prompt_submit',
+      session_id: 'test-session',
+      prompt: 'go',
+      source: 'claude',
+    })
+
+  const stopWith = (background_tasks?: number) => {
+    const event: HookEvent =
+      background_tasks === undefined
+        ? { event: 'stop', session_id: 'test-session', source: 'claude' }
+        : {
+            event: 'stop',
+            session_id: 'test-session',
+            background_tasks,
+            source: 'claude',
+          }
+    return transitionSession(running(), event)
+  }
+
+  it('stays running when the turn ends with background work in flight', () => {
+    const record = stopWith(2)
+    expect(record.status).toBe('running')
+    expect(record.needsAttention).toBe(false)
+    expect(record.statusLabel).toBe('2 background tasks running')
+    expect(record.backgroundTasks).toBe(2)
+  })
+
+  it('uses the singular label for a single background task', () => {
+    expect(stopWith(1).statusLabel).toBe('1 background task running')
+  })
+
+  it('goes to waiting_for_input when nothing is left running', () => {
+    const record = stopWith(0)
+    expect(record.status).toBe('waiting_for_input')
+    expect(record.needsAttention).toBe(true)
+    expect(record.backgroundTasks).toBe(0)
+  })
+
+  it('goes to waiting_for_input on a payload with no background_tasks field', () => {
+    const record = stopWith(undefined)
+    expect(record.status).toBe('waiting_for_input')
+    expect(record.needsAttention).toBe(true)
+  })
+
+  it('falls back to the last known count when the field is absent', () => {
+    // A StopFailure right after a Stop that reported work in flight: the
+    // failure payload carries no count, and reading that as zero would fake
+    // idleness while the background agents are still going.
+    const busy = stopWith(3)
+    const record = transitionSession(busy, {
+      event: 'stop',
+      session_id: 'test-session',
+      source: 'claude',
+    })
+    expect(record.status).toBe('running')
+    expect(record.backgroundTasks).toBe(3)
+  })
+
+  it('subagent_stop keeps the session running while work remains', () => {
+    const record = transitionSession(stopWith(3), {
+      event: 'subagent_stop',
+      session_id: 'test-session',
+      background_tasks: 2,
+      source: 'claude',
+    })
+    expect(record.status).toBe('running')
+    expect(record.statusLabel).toBe('2 background tasks running')
+    expect(record.backgroundTasks).toBe(2)
+  })
+
+  it('subagent_stop reaching zero records the count without changing the view', () => {
+    const idle = stopWith(0)
+    const record = transitionSession(idle, {
+      event: 'subagent_stop',
+      session_id: 'test-session',
+      background_tasks: 0,
+      source: 'claude',
+    })
+    // Fires for internal utility agents too — flashing "running" here would be
+    // the inverse of the false-idle bug.
+    expect(record).toBe(idle)
+  })
+
+  it('the last subagent finishing hands an already-ended turn back to the user', () => {
+    // Nothing else fires here: the turn's Stop already happened, and it was
+    // suppressed because background work was still in flight.
+    const record = transitionSession(stopWith(1), {
+      event: 'subagent_stop',
+      session_id: 'test-session',
+      background_tasks: 0,
+      source: 'claude',
+    })
+    expect(record.status).toBe('waiting_for_input')
+    expect(record.needsAttention).toBe(true)
+    expect(record.statusLabel).toBeUndefined()
+    expect(record.backgroundTasks).toBe(0)
+    expect(record.idleWithBackground).toBe(false)
+  })
+
+  it('a subagent finishing mid-turn only updates the count', () => {
+    const busy = transitionSession(running(), {
+      event: 'subagent_stop',
+      session_id: 'test-session',
+      background_tasks: 2,
+      source: 'claude',
+    })
+    const record = transitionSession(busy, {
+      event: 'subagent_stop',
+      session_id: 'test-session',
+      background_tasks: 0,
+      source: 'claude',
+    })
+    expect(record.status).toBe('running')
+    expect(record.needsAttention).toBe(false)
+    expect(record.backgroundTasks).toBe(0)
+  })
+
+  it('subagent_stop never resurrects a retired session', () => {
+    const dead = transitionSession(running(), {
+      event: 'session_end',
+      session_id: 'test-session',
+      pid: 42,
+      source: 'claude',
+    })
+    const record = transitionSession(dead, {
+      event: 'subagent_stop',
+      session_id: 'test-session',
+      background_tasks: 1,
+      source: 'claude',
+    })
+    expect(record).toBe(dead)
+  })
+
+  it('subagent_stop does not take the attention dot off a finished turn', () => {
+    const idle = stopWith(0)
+    expect(idle.needsAttention).toBe(true)
+    const record = transitionSession(idle, {
+      event: 'subagent_stop',
+      session_id: 'test-session',
+      background_tasks: 1,
+      source: 'claude',
+    })
+    expect(record.status).toBe('waiting_for_input')
+    expect(record.needsAttention).toBe(true)
+    expect(record.backgroundTasks).toBe(1)
+  })
+
+  it('a prompt still applies while only background work keeps the row busy', () => {
+    const record = transitionSession(stopWith(2), {
+      event: 'user_prompt_submit',
+      session_id: 'test-session',
+      prompt: 'next thing',
+      source: 'claude',
+    })
+    expect(record.status).toBe('running')
+    expect(record.subtitle).toBe('next thing')
+    expect(record.idleWithBackground).toBe(false)
+  })
+
+  it('tool_completed leaves a background-only session alone', () => {
+    const busy = stopWith(2)
+    const record = transitionSession(busy, {
+      event: 'tool_completed',
+      session_id: 'test-session',
+      tool_name: 'Bash',
+      source: 'claude',
+    })
+    expect(record).toBe(busy)
+  })
+
+  it('a new session start clears the carried-over count', () => {
+    const record = transitionSession(stopWith(2), makeStart())
+    expect(record.backgroundTasks).toBe(0)
+  })
+})

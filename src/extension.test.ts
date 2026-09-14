@@ -11,6 +11,7 @@ const {
   mockClearAttentionLocal,
   mockGetSessionForTerminal,
   mockGetTerminalPid,
+  mockGetTerminalForSession,
   mockGetConfiguration,
 } = vi.hoisted(() => ({
   mockDispose: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
@@ -21,6 +22,7 @@ const {
   mockClearAttentionLocal: vi.fn(),
   mockGetSessionForTerminal: vi.fn(),
   mockGetTerminalPid: vi.fn(),
+  mockGetTerminalForSession: vi.fn(),
   mockGetConfiguration: vi.fn(
     (_key: string, defaultValue: unknown) => defaultValue,
   ),
@@ -51,6 +53,7 @@ vi.mock('vscode', () => ({
       dispose: vi.fn(),
     }),
     registerFileDecorationProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+    registerWebviewViewProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
     createOutputChannel: vi.fn().mockReturnValue({
       appendLine: vi.fn(),
       dispose: vi.fn(),
@@ -130,14 +133,22 @@ vi.mock('./treeProvider.js', () => ({
   ClaudeTerminalProvider: vi.fn().mockImplementation(() => ({
     getChildByIndex: mockGetChildByIndex,
     getChildren: vi.fn().mockReturnValue([]),
-    getTreeItem: vi.fn(),
     onDidChangeTreeData: vi.fn(),
+    onDidChangeSessions: vi.fn().mockReturnValue({ dispose: vi.fn() }),
     clearAttentionLocal: mockClearAttentionLocal,
     refresh: vi.fn(),
     refreshRemoteTerminals: vi.fn(),
     getTerminalInfoForRegistry: vi.fn().mockReturnValue([]),
     getSessionForTerminal: mockGetSessionForTerminal,
     getTerminalPid: mockGetTerminalPid,
+    getTerminalForSession: mockGetTerminalForSession,
+    getSessions: vi.fn().mockReturnValue([]),
+    getRemoteSessionInputs: vi.fn().mockReturnValue([]),
+    getKnownCwds: vi.fn().mockReturnValue([]),
+    getPlainTerminals: vi.fn().mockReturnValue([]),
+    getWorkspaceName: vi.fn().mockReturnValue('ws'),
+    getBranch: vi.fn().mockReturnValue(undefined),
+    getShortcutIndexForSession: vi.fn().mockReturnValue(undefined),
     setBranchInfo: vi.fn(),
     getRootSections: vi.fn().mockReturnValue([]),
     dispose: vi.fn(),
@@ -158,6 +169,7 @@ vi.mock('effect', async (importOriginal) => {
 import * as extension from './extension.js'
 import { writeCodexHooks, removeCodexHooks, checkCodexHooks } from './extension.js'
 import * as vscode from 'vscode'
+import { ClaudeTerminalProvider } from './treeProvider.js'
 import * as fs from 'node:fs'
 import type { RemoteTerminalNode } from './treeProvider.js'
 
@@ -191,6 +203,36 @@ describe('extension', () => {
   })
 
   describe('activate', () => {
+    it('registers every Claude hook event the reporter handles', () => {
+      const ctx = makeContext('/storage')
+      extension.activate(ctx as never)
+
+      const writeCall = vi
+        .mocked(fs.writeFileSync)
+        .mock.calls.find(
+          (call) =>
+            typeof call[0] === 'string' &&
+            call[0].includes(path.join('.claude', 'settings.json')),
+        )
+      expect(writeCall).toBeDefined()
+      const written = JSON.parse(writeCall![1] as string) as Record<string, unknown>
+      const hooks = written['hooks'] as Record<string, unknown>
+      for (const event of [
+        'SessionStart',
+        'SessionEnd',
+        'UserPromptSubmit',
+        'PreToolUse',
+        'PostToolUse',
+        'PostToolUseFailure',
+        'PermissionRequest',
+        'Stop',
+        'StopFailure',
+        'SubagentStop',
+      ]) {
+        expect(hooks[event], event).toBeDefined()
+      }
+    })
+
     it('replaces VSCODE_CLAUDE_SOCKET with stable socket path', () => {
       const ctx = makeContext('/storage')
       extension.activate(ctx as never)
@@ -201,57 +243,19 @@ describe('extension', () => {
       )
     })
 
-    it('creates claudeTerminalManagerPanel tree view', () => {
+    it('registers claudeTerminalManagerPanel as a webview view', () => {
       const ctx = makeContext('/storage')
       extension.activate(ctx as never)
 
-      expect(vscode.window.createTreeView).toHaveBeenCalledWith(
+      expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalledWith(
         'claudeTerminalManagerPanel',
         expect.objectContaining({
-          treeDataProvider: expect.objectContaining({
-            getTreeItem: expect.any(Function),
-            getChildren: expect.any(Function),
-          }),
+          resolveWebviewView: expect.any(Function),
         }),
-      )
-    })
-
-    it('registers file decoration provider for local highlight', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      expect(vscode.window.registerFileDecorationProvider).toHaveBeenCalledWith(
         expect.objectContaining({
-          provideFileDecoration: expect.any(Function),
+          webviewOptions: { retainContextWhenHidden: true },
         }),
       )
-    })
-
-    it('uses file decorations only to highlight local tree items', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      const decorationProvider = vi.mocked(
-        vscode.window.registerFileDecorationProvider,
-      ).mock.calls[0]?.[0]
-      expect(decorationProvider).toBeDefined()
-
-      const localDecoration = decorationProvider!.provideFileDecoration(
-        { scheme: 'ctm', query: '' } as vscode.Uri,
-        {} as vscode.CancellationToken,
-      ) as vscode.FileDecoration
-      const remoteDecoration = decorationProvider!.provideFileDecoration(
-        {
-          scheme: 'ctm-status',
-          query: '',
-        } as vscode.Uri,
-        {} as vscode.CancellationToken,
-      )
-
-      expect(localDecoration).toEqual({
-        color: expect.objectContaining({ id: 'terminal.ansiGreen' }),
-      })
-      expect(remoteDecoration).toBeUndefined()
     })
 
     it('creates storage bin directory and copies reporter script', () => {
@@ -276,15 +280,17 @@ describe('extension', () => {
       const ctx = makeContext('/storage')
       extension.activate(ctx as never)
 
-      // outputChannel + runtime dispose + ClaudeTerminalProvider + treeView +
-      // selectionHandler + decorationProvider + expandAll + focusTerminal +
+      // outputChannel + runtime dispose + ClaudeTerminalProvider +
+      // webviewViewProvider + panel dispose + focusTerminal +
       // focusTerminal0-9 (10) + focusTerminalByIndex (backward compat) +
       // customizeShortcuts +
+      // newSession + resumeSession + focusSession + closeSession +
+      // renameSessionById + refreshTickets +
       // renameSession + resetState + closeTerminal + focusRemoteTerminal + focusWindow +
       // installHooks + removeHooks + checkHooks +
       // focusWatcher + onDidChangeConfiguration + terminalOpenSub + terminalCloseSub +
       // activeTerminalSub + windowEntry cleanup + watcher
-      expect(ctx.subscriptions).toHaveLength(35)
+      expect(ctx.subscriptions).toHaveLength(39)
       for (const sub of ctx.subscriptions) {
         expect(typeof sub.dispose).toBe('function')
       }
@@ -1322,233 +1328,110 @@ describe('extension', () => {
       return match?.[1] as ((...args: unknown[]) => void) | undefined
     }
 
-    beforeEach(() => {
-      mockGetChildByIndex.mockReset()
-      mockClearAttentionLocal.mockReset()
+    const session = (over: Record<string, unknown> = {}) => ({
+      sessionId: 'sess-a',
+      status: 'waiting_for_input',
+      pid: 10,
+      subtitle: undefined,
+      terminalId: undefined,
+      customName: undefined,
+      slug: 'a-session',
+      cwd: '/home/me/repo',
+      lastEventAt: 1,
+      statusLabel: undefined,
+      needsAttention: false,
+      activeBlockingTool: undefined,
+      source: 'claude',
+      backgroundTasks: 0,
+      idleWithBackground: false,
+      ...over,
     })
 
-    it('1(a) focusTerminal0 handler calls getChildByIndex(0)', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      const mockShow = vi.fn()
-      mockGetChildByIndex.mockReturnValue({
-        kind: 'terminal',
-        terminal: { name: 'bash', show: mockShow },
-        pid: 1234,
-      })
-
-      const handler = getHandler('claudeTerminalManager.focusTerminal0')
-      expect(handler).toBeDefined()
-      handler!()
-
-      expect(mockGetChildByIndex).toHaveBeenCalledWith(0)
-      expect(mockShow).toHaveBeenCalledWith(false)
-    })
-
-    it('1(b) focusTerminal5 handler calls getChildByIndex(5)', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      const mockShow = vi.fn()
-      mockGetChildByIndex.mockReturnValue({
-        kind: 'terminal',
-        terminal: { name: 'bash', show: mockShow },
-        pid: 5678,
-      })
-
-      const handler = getHandler('claudeTerminalManager.focusTerminal5')
-      expect(handler).toBeDefined()
-      handler!()
-
-      expect(mockGetChildByIndex).toHaveBeenCalledWith(5)
-      expect(mockShow).toHaveBeenCalledWith(false)
-    })
-
-    it('1(c) focusTerminalByIndex with { index: 3 } calls getChildByIndex(3)', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      const mockShow = vi.fn()
-      mockGetChildByIndex.mockReturnValue({
-        kind: 'terminal',
-        terminal: { name: 'bash', show: mockShow },
-        pid: 3333,
-      })
-
-      const handler = getHandler(
-        'claudeTerminalManager.focusTerminalByIndex',
-      ) as ((args: { index: number } | undefined) => void) | undefined
-      expect(handler).toBeDefined()
-      handler!({ index: 3 })
-
-      expect(mockGetChildByIndex).toHaveBeenCalledWith(3)
-      expect(mockShow).toHaveBeenCalledWith(false)
-    })
-
-    it('1(d) focusTerminalByIndex with undefined args is a no-op', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      const handler = getHandler(
-        'claudeTerminalManager.focusTerminalByIndex',
-      ) as ((args: { index: number } | undefined) => void) | undefined
-      expect(handler).toBeDefined()
-      handler!(undefined)
-
-      expect(mockGetChildByIndex).not.toHaveBeenCalled()
-      expect(
-        vi.mocked(vscode.window.showInformationMessage),
-      ).not.toHaveBeenCalled()
-    })
-
-    it('1(e) terminal node: calls terminal.show(false)', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      const mockShow = vi.fn()
-      mockGetChildByIndex.mockReturnValue({
-        kind: 'terminal',
-        terminal: { name: 'bash', show: mockShow },
-        pid: 1234,
-      })
-
-      const handler = getHandler('claudeTerminalManager.focusTerminal0')
-      handler!()
-
-      expect(mockShow).toHaveBeenCalledWith(false)
-    })
-
-    it('1(f) session node with terminal + needsAttention: shows and clears attention', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      mockRunFork.mockClear()
-      const mockShow = vi.fn()
-      mockGetChildByIndex.mockReturnValue({
-        kind: 'session',
-        terminal: { name: 'bash', show: mockShow },
-        record: {
-          sessionId: 'test-session',
-          status: 'waiting_for_input',
-          pid: 0,
-          terminalId: undefined,
-          subtitle: undefined,
-          customName: undefined,
-          lastEventAt: 0,
-          statusLabel: undefined,
-          needsAttention: true,
-          source: 'claude',
-        },
-      })
-
-      const handler = getHandler('claudeTerminalManager.focusTerminal0')
-      handler!()
-
-      expect(mockShow).toHaveBeenCalledWith(false)
-      expect(mockClearAttentionLocal).toHaveBeenCalledWith('test-session')
-      expect(mockRunFork).toHaveBeenCalled()
-    })
-
-    it('1(f2) session node with terminal, needsAttention=false: no attention clear', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      mockRunFork.mockClear()
-      const mockShow = vi.fn()
-      mockGetChildByIndex.mockReturnValue({
-        kind: 'session',
-        terminal: { name: 'bash', show: mockShow },
-        record: {
-          sessionId: 'test-session',
-          status: 'running',
-          pid: 0,
-          terminalId: undefined,
-          subtitle: undefined,
-          customName: undefined,
-          lastEventAt: 0,
-          statusLabel: undefined,
-          needsAttention: false,
-          source: 'claude',
-        },
-      })
-
-      const handler = getHandler('claudeTerminalManager.focusTerminal0')
-      handler!()
-
-      expect(mockShow).toHaveBeenCalledWith(false)
-      expect(mockClearAttentionLocal).not.toHaveBeenCalled()
-      expect(mockRunFork).not.toHaveBeenCalled()
-    })
-
-    it('1(g) session node without terminal: shows information message', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
-
-      mockGetChildByIndex.mockReturnValue({
-        kind: 'session',
-        terminal: undefined,
-        record: {
-          sessionId: 'test-session',
-          status: 'running',
-          pid: 0,
-          terminalId: undefined,
-          subtitle: undefined,
-          customName: undefined,
-          lastEventAt: 0,
-          statusLabel: undefined,
-          needsAttention: false,
-          source: 'claude',
-        },
-      })
-
-      const handler = getHandler('claudeTerminalManager.focusTerminal0')
-      handler!()
-
-      expect(
-        vi.mocked(vscode.window.showInformationMessage),
-      ).toHaveBeenCalledWith(
-        'Terminal not yet correlated — open a terminal manually',
+    // Shortcuts resolve against the model the panel built, so they must be on.
+    const activateWithSessions = (sessions: unknown[]) => {
+      mockGetConfiguration.mockImplementation(
+        (key: string, defaultValue: unknown) =>
+          key === 'keyboard.enableTerminalShortcuts' ? true : defaultValue,
       )
-    })
-
-    it('1(h) remote terminal node: executes focusRemoteTerminal command', () => {
       const ctx = makeContext('/storage')
       extension.activate(ctx as never)
+      const provider = vi.mocked(ClaudeTerminalProvider).mock.results[0]
+        ?.value as { getSessions: ReturnType<typeof vi.fn> }
+      provider.getSessions.mockReturnValue(sessions)
+      // Stand in for the session event that would normally drive a push.
+      const panel = vi.mocked(vscode.window.registerWebviewViewProvider).mock
+        .calls[0]?.[1] as unknown as { push: () => void }
+      panel.push()
+      return ctx
+    }
 
-      const remoteNode = {
-        kind: 'remoteTerminal' as const,
-        windowId: 'win-123',
-        workspaceName: 'other-workspace',
-        terminalName: 'bash',
-        socketPath: '/tmp/test.sock',
-      }
-      mockGetChildByIndex.mockReturnValue(remoteNode)
-
-      // Clear executeCommand calls from activation
+    beforeEach(() => {
+      mockClearAttentionLocal.mockReset()
       vi.mocked(vscode.commands.executeCommand).mockClear()
+    })
 
-      const handler = getHandler('claudeTerminalManager.focusTerminal0')
+    it.each([
+      ['claudeTerminalManager.focusTerminal0', 'sess-0'],
+      ['claudeTerminalManager.focusTerminal1', 'sess-1'],
+    ])('%s focuses the row carrying that number', (command, expectedId) => {
+      activateWithSessions([
+        session({ sessionId: 'sess-0', needsAttention: true }),
+        session({ sessionId: 'sess-1' }),
+      ])
+
+      const handler = getHandler(command)
+      expect(handler).toBeDefined()
       handler!()
 
       expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
-        'claudeTerminalManager.focusRemoteTerminal',
-        remoteNode,
+        'claudeTerminalManager.focusSession',
+        expectedId,
       )
     })
 
-    it('1(i) getChildByIndex returns undefined (out of range): no-op', () => {
-      const ctx = makeContext('/storage')
-      extension.activate(ctx as never)
+    it('numbers rows in the order the panel renders them, attention first', () => {
+      activateWithSessions([
+        session({ sessionId: 'idle-one' }),
+        session({ sessionId: 'needs-me', needsAttention: true }),
+      ])
 
-      mockGetChildByIndex.mockReturnValue(undefined)
+      getHandler('claudeTerminalManager.focusTerminal0')!()
 
-      const handler = getHandler('claudeTerminalManager.focusTerminal9')
-      handler!()
+      // The attention row sorts first, so it is 0 even though it is listed second.
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        'claudeTerminalManager.focusSession',
+        'needs-me',
+      )
+    })
 
-      expect(
-        vi.mocked(vscode.window.showInformationMessage),
-      ).not.toHaveBeenCalled()
+    it('focusTerminalByIndex resolves the same way', () => {
+      activateWithSessions([session({ sessionId: 'only' })])
+
+      getHandler('claudeTerminalManager.focusTerminalByIndex')!({ index: 0 })
+
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        'claudeTerminalManager.focusSession',
+        'only',
+      )
+    })
+
+    it('does nothing when no row carries that number', () => {
+      activateWithSessions([session({ sessionId: 'only' })])
+
+      getHandler('claudeTerminalManager.focusTerminal9')!()
+
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claudeTerminalManager.focusSession',
+        expect.anything(),
+      )
+    })
+
+    it('ignores focusTerminalByIndex with no argument', () => {
+      activateWithSessions([session({ sessionId: 'only' })])
+
+      expect(() =>
+        getHandler('claudeTerminalManager.focusTerminalByIndex')!(undefined),
+      ).not.toThrow()
     })
   })
 

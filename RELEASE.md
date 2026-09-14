@@ -61,12 +61,12 @@ pnpm exec vsce publish --no-dependencies
 You will be prompted for your PAT if not already logged in. To log in ahead of time:
 
 ```sh
-pnpm exec vsce login jakub-musik
+pnpm exec vsce login abarre
 ```
 
 ### 7. Verify
 
-- Check the [Marketplace listing](https://marketplace.visualstudio.com/items?itemName=jakub-musik.claude-terminal-manager) shows the new version.
+- Check the [Marketplace listing](https://marketplace.visualstudio.com/items?itemName=abarre.claude-terminal-manager) shows the new version.
 - Install from the Marketplace in a fresh VS Code window to confirm.
 
 ## One-liner (build + install locally)

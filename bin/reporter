@@ -51,27 +51,137 @@ if sf and sid:
         f.write(sid)
 
 EVENT_MAP = {
-    'SessionStart':     'session_start',
-    'UserPromptSubmit': 'user_prompt_submit',
-    'PreToolUse':       'pre_tool_use',
-    'Stop':             'stop',
+    'SessionStart':      'session_start',
+    'SessionEnd':        'session_end',
+    'UserPromptSubmit':  'user_prompt_submit',
+    'PreToolUse':        'pre_tool_use',
+    'PermissionRequest': 'permission_request',
+    'Stop':              'stop',
+    # A turn that died on an API error leaves background work running, so it
+    # takes the same path as Stop rather than stranding the session as busy.
+    'StopFailure':       'stop',
+    'SubagentStop':      'subagent_stop',
 }
 
 evt = EVENT_MAP.get(hook)
 # Claude does not fire Stop when the user interrupts a turn. A cancelled tool
 # is instead reported through PostToolUse (or, for abort-style failures,
-# PostToolUseFailure). Ignore ordinary successful/failed tool completions.
+# PostToolUseFailure). Ordinary completions become tool_completed, which is
+# what retires a permission prompt the user has just granted.
 if hook == 'PostToolUse':
     response = data.get('tool_response', {})
     if isinstance(response, dict) and response.get('interrupted') is True:
         evt = 'tool_interrupted'
-elif hook == 'PostToolUseFailure' and data.get('is_interrupt') is True:
-    evt = 'tool_interrupted'
+    else:
+        evt = 'tool_completed'
+elif hook == 'PostToolUseFailure':
+    evt = 'tool_interrupted' if data.get('is_interrupt') is True else 'tool_completed'
 
 if not (evt and sid):
     sys.exit(0)
 
 source = os.environ.get('_SOURCE', 'claude')
+
+# Deliberately a denylist, not an allowlist: an unrecognised status counts as
+# active, which only delays the idle indicator, whereas guessing 'finished'
+# means a running task is reported as none and the session fakes idleness.
+FINISHED_STATUSES = {
+    'completed', 'complete', 'finished', 'failed', 'failure', 'error',
+    'cancelled', 'canceled', 'killed', 'stopped', 'done', 'success',
+    'succeeded', 'timeout', 'timed_out', 'aborted',
+}
+
+def _is_finished(item):
+    status = item.get('status')
+    return isinstance(status, str) and status.lower() in FINISHED_STATUSES
+
+def background_task_count(payload, excluding_id=None):
+    '''Still-running background agents/tasks, or None when the field is absent.
+
+    Claude Code 2.1.198+ ships background_tasks as a list of
+    {id, type, status, description, ...}. Unknown statuses count as active: an
+    over-count only delays the idle indicator, an under-count fakes idleness.
+    '''
+    value = payload.get('background_tasks')
+    if value is None:
+        return None
+    if isinstance(value, list):
+        n = 0
+        for item in value:
+            if not isinstance(item, dict):
+                n += 1
+                continue
+            if excluding_id and item.get('id') == excluding_id:
+                continue
+            if _is_finished(item):
+                continue
+            n += 1
+        return n
+    if isinstance(value, dict):
+        # Defensive: a map keyed by task id. Filter it like the list form
+        # rather than trusting len(), so finished entries do not inflate it.
+        return sum(
+            0 if isinstance(v, dict) and (_is_finished(v) or (excluding_id and k == excluding_id))
+            else 1
+            for k, v in value.items()
+        )
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+def condense(s, limit=120):
+    s = ' '.join(s.split())
+    return s if len(s) <= limit else s[:limit - 1] + chr(0x2026)
+
+def short_path(p, limit=60):
+    if len(p) <= limit:
+        return p
+    parts = [x for x in p.split('/') if x]
+    return chr(0x2026) + '/' + '/'.join(parts[-2:]) if len(parts) > 1 else chr(0x2026) + '/' + p
+
+def permission_detail(payload):
+    '''\"Allow <tool>: <key field>?\" — the same shape iTerm2's cc-status shows.'''
+    tool = payload.get('tool_name') or ''
+    if not tool:
+        return None
+    ti = payload.get('tool_input')
+    if not isinstance(ti, dict):
+        ti = {}
+    # Neither of these grants a permission: one asks a question, the other asks
+    # for a plan approval. The \"Allow …?\" framing would be wrong.
+    if tool == 'AskUserQuestion':
+        questions = ti.get('questions')
+        if isinstance(questions, list):
+            texts = [q.get('question') for q in questions
+                     if isinstance(q, dict) and isinstance(q.get('question'), str)]
+            if texts:
+                return condense(' '.join(texts))
+    if tool == 'ExitPlanMode':
+        return 'Review proposed plan?'
+    if tool == 'Bash':
+        summary = condense('Bash: ' + (ti.get('command') or ''))
+    elif tool in ('Read', 'Edit', 'Write', 'MultiEdit'):
+        summary = tool + ': ' + short_path(ti.get('file_path') or '')
+    elif tool == 'NotebookEdit':
+        summary = 'NotebookEdit: ' + short_path(ti.get('notebook_path') or '')
+    elif tool == 'Grep':
+        summary = 'Grep ' + repr(ti.get('pattern') or '')
+    elif tool == 'Glob':
+        summary = 'Glob: ' + (ti.get('pattern') or '')
+    elif tool in ('Agent', 'Task'):
+        summary = tool + ': ' + (ti.get('description') or '')
+    elif tool == 'WebFetch':
+        summary = 'WebFetch: ' + (ti.get('url') or '')
+    elif tool == 'WebSearch':
+        summary = 'WebSearch: ' + (ti.get('query') or '')
+    elif tool.startswith('mcp__'):
+        parts = [p for p in tool[len('mcp__'):].split('__') if p]
+        summary = parts[0] + '/' + parts[-1] if len(parts) >= 2 else tool
+    else:
+        summary = tool
+    return condense('Allow ' + summary + '?')
 
 try:
     pid_num = int(os.environ.get('_PID', '0'))
@@ -79,7 +189,7 @@ except (ValueError, TypeError):
     pid_num = 0
 event = {'event': evt, 'session_id': sid}
 event['source'] = source
-if hook == 'SessionStart':
+if evt == 'session_start':
     event['pid'] = pid_num
     # Extract git branch from the session's working directory
     import subprocess
@@ -95,15 +205,39 @@ if hook == 'SessionStart':
                 event['branch'] = branch
         except Exception:
             pass
-elif hook == 'Stop':
+elif evt == 'stop':
     sr = data.get('stop_reason', '')
     if sr:
         event['stop_reason'] = sr
-elif hook == 'UserPromptSubmit':
+    running = background_task_count(data)
+    # Omitted when the payload has no such field, so the extension keeps the
+    # last count it saw instead of reading the absence as zero.
+    if running is not None:
+        event['background_tasks'] = running
+elif evt == 'subagent_stop':
+    # The payload still lists the agent that just stopped as running.
+    # The key is agent_id on Claude Code 2.1.201; accept the plausible
+    # alternatives so a rename does not silently pin the count above zero.
+    just_stopped = data.get('agent_id') or data.get('subagent_id')
+    if not just_stopped and isinstance(data.get('agent'), dict):
+        just_stopped = data['agent'].get('id')
+    remaining = background_task_count(data, just_stopped)
+    if remaining is None:
+        sys.exit(0)  # No field: nothing to learn from this event.
+    event['background_tasks'] = remaining
+elif evt == 'user_prompt_submit':
     event['prompt'] = data.get('prompt', '')
-elif hook == 'PreToolUse':
+elif evt == 'pre_tool_use':
     event['tool_name'] = data.get('tool_name', '')
-elif evt == 'tool_interrupted':
+elif evt == 'permission_request':
+    tool_name = data.get('tool_name', '')
+    if not tool_name:
+        sys.exit(0)
+    event['tool_name'] = tool_name
+    detail = permission_detail(data)
+    if detail:
+        event['detail'] = detail
+elif evt in ('tool_interrupted', 'tool_completed'):
     tool_name = data.get('tool_name', '')
     if tool_name:
         event['tool_name'] = tool_name

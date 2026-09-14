@@ -38,7 +38,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 const assert = __importStar(require("assert"));
 const vscode = __importStar(require("vscode"));
-const EXTENSION_ID = 'jakubmusik.claude-terminal-manager';
+const EXTENSION_ID = 'abarre.claude-terminal-manager';
 suite('Extension Test Suite', () => {
     suiteSetup(async () => {
         // Ensure the extension is activated before tests run
@@ -54,13 +54,15 @@ suite('Extension Test Suite', () => {
         assert.ok(ext !== undefined, 'Extension should be installed');
         assert.ok(ext.isActive, 'Extension should be active');
     });
-    // (b) claudeTerminalManager tree view is declared in package.json
-    test('claudeTerminalManager view is declared in package manifest', () => {
+    // (b) the panel is declared as a webview in its own activity bar container
+    test('claudeTerminalManagerPanel is declared as a webview view', () => {
         const ext = vscode.extensions.getExtension(EXTENSION_ID);
         assert.ok(ext !== undefined, 'Extension should be installed');
         const pkg = ext.packageJSON;
-        const views = pkg.contributes?.views?.explorer ?? [];
-        assert.ok(views.some((v) => v.id === 'claudeTerminalManager'), 'claudeTerminalManager view should be declared in contributes.views');
+        const views = pkg.contributes?.views?.['claudeTerminalManagerSidebar'] ?? [];
+        const panel = views.find((v) => v.id === 'claudeTerminalManagerPanel');
+        assert.ok(panel !== undefined, 'panel view should be declared');
+        assert.strictEqual(panel.type, 'webview', 'panel should be a webview view');
     });
     // (c) Opening a new terminal has PATH prepended via environmentVariableCollection
     test('Extension environment collection prepends PATH', async function () {
@@ -111,12 +113,32 @@ suite('Extension Test Suite', () => {
         const commands = await vscode.commands.getCommands(true);
         assert.ok(commands.includes('claudeTerminalManager.focusTerminal'), 'focusTerminal command should be registered');
     });
+    // (f2) the commands the panel drives are registered
+    test('panel commands are registered', async () => {
+        const commands = await vscode.commands.getCommands(true);
+        for (const id of [
+            'claudeTerminalManager.newSession',
+            'claudeTerminalManager.resumeSession',
+            'claudeTerminalManager.focusSession',
+            'claudeTerminalManager.closeSession',
+            'claudeTerminalManager.renameSessionById',
+            'claudeTerminalManager.refreshTickets',
+        ]) {
+            assert.ok(commands.includes(id), `${id} should be registered`);
+        }
+    });
+    // (f3) focusRemoteTerminal command is registered and callable (T2.7)
+    test('focusRemoteTerminal command is registered', async () => {
+        const commands = await vscode.commands.getCommands(true);
+        assert.ok(commands.includes('claudeTerminalManager.focusRemoteTerminal'), 'focusRemoteTerminal command should be registered');
+    });
     // (g) Settings readable with correct defaults
     test('Settings have correct default values', () => {
         const config = vscode.workspace.getConfiguration('claudeTerminalManager');
         assert.strictEqual(config.get('notifications.onSessionComplete'), true, 'notifications.onSessionComplete default should be true');
         assert.strictEqual(config.get('sidebar.showNonClaudeTerminals'), true, 'sidebar.showNonClaudeTerminals default should be true');
         assert.strictEqual(config.get('status.verboseToolNames'), false, 'status.verboseToolNames default should be false');
+        assert.strictEqual(config.get('sidebar.showTerminalsFromAllWindows'), false, 'sidebar.showTerminalsFromAllWindows default should be false');
     });
 });
 //# sourceMappingURL=extension.test.js.map

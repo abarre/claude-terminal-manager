@@ -25,6 +25,7 @@ vi.mock('vscode', () => ({
       dispose: vi.fn(),
     }),
     registerFileDecorationProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+    registerWebviewViewProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
     createOutputChannel: vi.fn().mockReturnValue({
       appendLine: vi.fn(),
       dispose: vi.fn(),
@@ -189,6 +190,16 @@ beforeEach(() => {
   } as never)
 })
 
+/**
+ * The panel owns the provider now, so reach it through the registered webview
+ * view provider rather than through a tree view that no longer exists.
+ */
+const capturedProvider = (): ClaudeTerminalProvider => {
+  const panel = vi.mocked(vscode.window.registerWebviewViewProvider).mock
+    .calls[0]?.[1] as unknown as { _provider: ClaudeTerminalProvider }
+  return panel._provider
+}
+
 describe('renameSession command handler', () => {
   it('(a) updates workspaceState with correct key and value', async () => {
     const ctx = makeContext()
@@ -280,14 +291,12 @@ describe('renameSession command handler', () => {
     const ctx = makeContext()
     extension.activate(ctx as never)
 
-    // Get the provider from the createTreeView call
-    const provider = (vi.mocked(vscode.window.createTreeView).mock
-      .calls[0]?.[1] as { treeDataProvider: ClaudeTerminalProvider }).treeDataProvider
+    const provider = capturedProvider()
 
     // Access the emitter's fire mock and reset call count
     const emitter = (
-      provider as unknown as { _emitter: { fire: ReturnType<typeof vi.fn> } }
-    )._emitter
+      provider as unknown as { _changeEmitter: { fire: ReturnType<typeof vi.fn> } }
+    )._changeEmitter
     emitter.fire.mockClear()
 
     const handler = getCapturedHandler('claudeTerminalManager.renameSession')
@@ -320,12 +329,11 @@ describe('renameSession command handler', () => {
     const ctx = makeContext()
     extension.activate(ctx as never)
 
-    const provider = (vi.mocked(vscode.window.createTreeView).mock
-      .calls[0]?.[1] as { treeDataProvider: ClaudeTerminalProvider }).treeDataProvider
+    const provider = capturedProvider()
 
     const emitter = (
-      provider as unknown as { _emitter: { fire: ReturnType<typeof vi.fn> } }
-    )._emitter
+      provider as unknown as { _changeEmitter: { fire: ReturnType<typeof vi.fn> } }
+    )._changeEmitter
     emitter.fire.mockClear()
 
     const handler = getCapturedHandler('claudeTerminalManager.renameSession')
@@ -340,108 +348,3 @@ describe('renameSession command handler', () => {
   })
 })
 
-describe('ClaudeTerminalProvider with workspaceState', () => {
-  it('(b) getTreeItem uses workspaceState name as label when set', () => {
-    const ws = makeWorkspaceState()
-    ws.get.mockReturnValue('Stored Custom Name')
-
-    const provider = new ClaudeTerminalProvider(
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      ws as never,
-    )
-    const record = makeRecord({ sessionId: 'abc12345def6' })
-    const node: SessionNode = { kind: 'session', record, terminal: undefined }
-    const item = provider.getTreeItem(node)
-
-    expect(item.label).toBe('Stored Custom Name')
-    expect(ws.get).toHaveBeenCalledWith('session:name:abc12345def6')
-  })
-
-  it('workspaceState name takes precedence over customName', () => {
-    const ws = makeWorkspaceState()
-    ws.get.mockReturnValue('Workspace Name')
-
-    const provider = new ClaudeTerminalProvider(
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      ws as never,
-    )
-    const record = makeRecord({ customName: 'Record Custom Name' })
-    const node: SessionNode = { kind: 'session', record, terminal: undefined }
-    const item = provider.getTreeItem(node)
-
-    expect(item.label).toBe('Workspace Name')
-  })
-
-  it('falls back to customName when no workspaceState name', () => {
-    const ws = makeWorkspaceState()
-    ws.get.mockReturnValue(undefined)
-
-    const provider = new ClaudeTerminalProvider(
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      ws as never,
-    )
-    const record = makeRecord({ customName: 'Record Custom Name' })
-    const node: SessionNode = { kind: 'session', record, terminal: undefined }
-    const item = provider.getTreeItem(node)
-
-    expect(item.label).toBe('Claude')
-  })
-
-  it('falls back to Claude when neither workspaceState nor customName', () => {
-    const ws = makeWorkspaceState()
-    ws.get.mockReturnValue(undefined)
-
-    const provider = new ClaudeTerminalProvider(
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      ws as never,
-    )
-    const record = makeRecord({
-      sessionId: 'abc12345def6',
-      customName: undefined,
-    })
-    const node: SessionNode = { kind: 'session', record, terminal: undefined }
-    const item = provider.getTreeItem(node)
-
-    expect(item.label).toBe('Claude')
-  })
-
-  it('workspaceState name keeps the leading filled status icon when waiting_for_input', () => {
-    const ws = makeWorkspaceState()
-    ws.get.mockReturnValue('My Session')
-
-    const provider = new ClaudeTerminalProvider(
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      ws as never,
-    )
-    const record = makeRecord({ status: 'waiting_for_input', needsAttention: true })
-    const node: SessionNode = { kind: 'session', record, terminal: undefined }
-    const item = provider.getTreeItem(node)
-
-    expect(item.label).toBe('My Session')
-    expect((item.iconPath as { id: string }).id).toBe('circle-filled')
-  })
-
-  it('getTreeItem works without workspaceState (undefined)', () => {
-    const provider = new ClaudeTerminalProvider()
-    const record = makeRecord({ sessionId: 'abc12345def6' })
-    const node: SessionNode = { kind: 'session', record, terminal: undefined }
-    const item = provider.getTreeItem(node)
-
-    expect(item.label).toBe('Claude')
-  })
-})

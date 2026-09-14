@@ -487,3 +487,61 @@ describe('SessionManager', () => {
       }).pipe(Effect.provide(SessionManagerLive)),
   )
 })
+
+describe('session revival (SessionEnd then SessionStart)', () => {
+  it.effect('a resumed session survives the deferred delete', () =>
+    Effect.gen(function* () {
+      const sm = yield* SessionManager
+      yield* sm.processEvent({
+        event: 'session_start',
+        session_id: 'revive',
+        pid: 111,
+        source: 'claude',
+      })
+      // SessionEnd fires on /clear and on resume, not only on a dead process.
+      yield* sm.processEvent({
+        event: 'session_end',
+        session_id: 'revive',
+        pid: 111,
+        source: 'claude',
+      })
+      yield* sm.processEvent({
+        event: 'session_start',
+        session_id: 'revive',
+        pid: 222,
+        source: 'claude',
+      })
+
+      const afterRestart = yield* sm.get('revive')
+      expect(afterRestart?.status).toBe('waiting_for_input')
+
+      yield* TestClock.adjust('10 seconds')
+
+      const afterDelay = yield* sm.get('revive')
+      expect(afterDelay).toBeDefined()
+      expect(afterDelay?.pid).toBe(222)
+    }).pipe(Effect.provide(makeSessionManagerLive())),
+  )
+
+  it.effect('a session that stays ended is still dropped', () =>
+    Effect.gen(function* () {
+      const sm = yield* SessionManager
+      yield* sm.processEvent({
+        event: 'session_start',
+        session_id: 'gone',
+        pid: 333,
+        source: 'claude',
+      })
+      yield* sm.processEvent({
+        event: 'session_end',
+        session_id: 'gone',
+        pid: 333,
+        source: 'claude',
+      })
+
+      yield* TestClock.adjust('10 seconds')
+
+      expect(yield* sm.get('gone')).toBeUndefined()
+    }).pipe(Effect.provide(makeSessionManagerLive())),
+  )
+})

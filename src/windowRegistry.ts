@@ -11,6 +11,11 @@ export interface RemoteSessionInfo {
   readonly slug?: string
   readonly customName?: string
   readonly source?: string
+  // Added for the panel redesign. Optional, so a window still running an older
+  // version publishes an entry we can read — its rows simply show less.
+  readonly cwd?: string
+  readonly backgroundTasks?: number
+  readonly lastEventAt?: number
 }
 
 export interface RemoteTerminalInfo {

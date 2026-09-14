@@ -5,7 +5,7 @@
 import * as assert from 'assert'
 import * as vscode from 'vscode'
 
-const EXTENSION_ID = 'jakubmusik.claude-terminal-manager'
+const EXTENSION_ID = 'abarre.claude-terminal-manager'
 
 suite('Extension Test Suite', () => {
   suiteSetup(async () => {
@@ -24,20 +24,19 @@ suite('Extension Test Suite', () => {
     assert.ok(ext.isActive, 'Extension should be active')
   })
 
-  // (b) claudeTerminalManager tree view is declared in package.json
-  test('claudeTerminalManager view is declared in package manifest', () => {
+  // (b) the panel is declared as a webview in its own activity bar container
+  test('claudeTerminalManagerPanel is declared as a webview view', () => {
     const ext = vscode.extensions.getExtension(EXTENSION_ID)
     assert.ok(ext !== undefined, 'Extension should be installed')
     const pkg = ext.packageJSON as {
       contributes?: {
-        views?: { explorer?: Array<{ id: string }> }
+        views?: Record<string, Array<{ id: string; type?: string }>>
       }
     }
-    const views = pkg.contributes?.views?.explorer ?? []
-    assert.ok(
-      views.some((v) => v.id === 'claudeTerminalManager'),
-      'claudeTerminalManager view should be declared in contributes.views',
-    )
+    const views = pkg.contributes?.views?.['claudeTerminalManagerSidebar'] ?? []
+    const panel = views.find((v) => v.id === 'claudeTerminalManagerPanel')
+    assert.ok(panel !== undefined, 'panel view should be declared')
+    assert.strictEqual(panel.type, 'webview', 'panel should be a webview view')
   })
 
   // (c) Opening a new terminal has PATH prepended via environmentVariableCollection
@@ -108,13 +107,19 @@ suite('Extension Test Suite', () => {
     )
   })
 
-  // (f2) renameTerminal command is registered and callable (T2.2)
-  test('renameTerminal command is registered', async () => {
+  // (f2) the commands the panel drives are registered
+  test('panel commands are registered', async () => {
     const commands = await vscode.commands.getCommands(true)
-    assert.ok(
-      commands.includes('claudeTerminalManager.renameTerminal'),
-      'renameTerminal command should be registered',
-    )
+    for (const id of [
+      'claudeTerminalManager.newSession',
+      'claudeTerminalManager.resumeSession',
+      'claudeTerminalManager.focusSession',
+      'claudeTerminalManager.closeSession',
+      'claudeTerminalManager.renameSessionById',
+      'claudeTerminalManager.refreshTickets',
+    ]) {
+      assert.ok(commands.includes(id), `${id} should be registered`)
+    }
   })
 
   // (f3) focusRemoteTerminal command is registered and callable (T2.7)

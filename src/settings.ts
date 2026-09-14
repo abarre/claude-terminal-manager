@@ -19,3 +19,42 @@ export const getUseMacOSAccessibilityForWindowFocus = (): boolean =>
   vscode.workspace
     .getConfiguration('claudeTerminalManager')
     .get<boolean>('windowFocus.useMacOSAccessibility', false)
+
+export const getEnableTerminalShortcuts = (): boolean =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<boolean>('keyboard.enableTerminalShortcuts', false)
+
+export const getPanelDensity = (): 'comfortable' | 'compact' =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<'comfortable' | 'compact'>('sidebar.density', 'comfortable')
+
+/** Hours of finished sessions to list per project. 0 disables the section. */
+export const getHistoryHours = (): number =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<number>('history.hours', 24)
+
+/** Shell command emitting ticket JSON. Empty hides the Tickets tab entirely. */
+export const getTicketsCommand = (): string =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<string>('tickets.command', '')
+
+export const getTicketsRefreshSeconds = (): number =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<number>('tickets.refreshSeconds', 60)
+
+export type NewSessionLocation = 'editor' | 'editorMain' | 'beside' | 'panel'
+
+export const getNewSessionLocation = (): NewSessionLocation =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<NewSessionLocation>('newSession.location', 'editorMain')
+
+export const getNewSessionCommand = (): string =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<string>('newSession.command', 'claude')

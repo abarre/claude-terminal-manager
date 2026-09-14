@@ -3,7 +3,7 @@
   "displayName": "Agent Terminal Manager",
   "description": "Track AI agent sessions (Claude, Codex) in VS Code terminals with sidebar panel",
   "version": "1.1.19",
-  "publisher": "jakub-musik",
+  "publisher": "abarre",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -24,7 +24,7 @@
   "icon": "resources/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jakub-musik/claude-terminal-manager"
+    "url": "https://github.com/abarre/claude-terminal-manager"
   },
   "activationEvents": [
     "onStartupFinished"
@@ -47,7 +47,8 @@
           "name": "Terminals",
           "icon": "resources/icon.svg",
           "contextualTitle": "Agent Terminal Manager",
-          "visibility": "visible"
+          "visibility": "visible",
+          "type": "webview"
         }
       ]
     },
@@ -154,41 +155,107 @@
         "category": "Agent Terminal Manager"
       },
       {
+        "command": "claudeTerminalManager.focusTerminalByIndex",
+        "title": "Focus Session by Index",
+        "category": "Agent Terminal Manager"
+      },
+      {
         "command": "claudeTerminalManager.customizeShortcuts",
         "title": "Customize Terminal Shortcuts",
         "icon": "$(keyboard)",
         "category": "Agent Terminal Manager"
       },
       {
-        "command": "claudeTerminalManager.expandAll",
-        "title": "Expand All",
-        "icon": "$(expand-all)",
+        "command": "claudeTerminalManager.newSession",
+        "title": "New Claude Session",
+        "icon": "$(add)",
+        "category": "Agent Terminal Manager"
+      },
+      {
+        "command": "claudeTerminalManager.resumeSession",
+        "title": "Resume Session",
+        "category": "Agent Terminal Manager"
+      },
+      {
+        "command": "claudeTerminalManager.focusSession",
+        "title": "Focus Session",
+        "category": "Agent Terminal Manager"
+      },
+      {
+        "command": "claudeTerminalManager.closeSession",
+        "title": "Close Session",
+        "category": "Agent Terminal Manager"
+      },
+      {
+        "command": "claudeTerminalManager.renameSessionById",
+        "title": "Rename Session",
+        "category": "Agent Terminal Manager"
+      },
+      {
+        "command": "claudeTerminalManager.refreshTickets",
+        "title": "Refresh Tickets and History",
+        "icon": "$(refresh)",
         "category": "Agent Terminal Manager"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "claudeTerminalManager.expandAll",
+          "command": "claudeTerminalManager.newSession",
           "when": "view == claudeTerminalManagerPanel",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeTerminalManager.refreshTickets",
+          "when": "view == claudeTerminalManagerPanel",
+          "group": "navigation@2"
         },
         {
           "command": "claudeTerminalManager.resetState",
           "when": "view == claudeTerminalManagerPanel",
-          "group": "navigation"
+          "group": "navigation@3"
         }
       ],
-      "view/item/context": [
+      "commandPalette": [
         {
-          "command": "claudeTerminalManager.closeTerminal",
-          "when": "viewItem == claudeSession",
-          "group": "inline"
+          "command": "claudeTerminalManager.resumeSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeTerminalManager.focusSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeTerminalManager.closeSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeTerminalManager.renameSessionById",
+          "when": "false"
+        },
+        {
+          "command": "claudeTerminalManager.renameSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeTerminalManager.focusTerminal",
+          "when": "false"
+        },
+        {
+          "command": "claudeTerminalManager.focusRemoteTerminal",
+          "when": "false"
+        },
+        {
+          "command": "claudeTerminalManager.focusWindow",
+          "when": "false"
         },
         {
           "command": "claudeTerminalManager.closeTerminal",
-          "when": "viewItem == terminal",
-          "group": "inline"
+          "when": "false"
+        },
+        {
+          "command": "claudeTerminalManager.focusTerminalByIndex",
+          "when": "false"
         }
       ]
     },
@@ -197,45 +264,97 @@
         "title": "Agent Terminal Manager",
         "properties": {
           "claudeTerminalManager.sidebar.showNonClaudeTerminals": {
-          "type": "boolean",
-          "default": false,
-          "description": "List all terminals in the sidebar, not just Claude sessions"
-        },
-        "claudeTerminalManager.status.verboseToolNames": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show tool name in status bar during PreToolUse (e.g. Running: Bash)"
-        },
-        "claudeTerminalManager.sidebar.showTerminalsFromAllWindows": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show terminals from all VS Code windows in the sidebar, not just the current window. Remote terminals show the project name next to their label."
-        },
-        "claudeTerminalManager.windowFocus.useMacOSAccessibility": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "On macOS, activate remote VS Code windows with the Accessibility API instead of the `code` CLI. This is faster, but requires Visual Studio Code to have Accessibility permission. If activation fails or the window title is ambiguous, the extension falls back to the `code` CLI."
-        },
-        "claudeTerminalManager.keyboard.enableTerminalShortcuts": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable keyboard shortcuts to focus terminals by their position in the sidebar. Default: Ctrl+Alt+0–9. Customize individual bindings in Keyboard Shortcuts (search 'Focus Session')."
-        },
-        "claudeTerminalManager.keyboard.customize": {
-          "type": "null",
-          "markdownDescription": "Rebind shortcuts in the [Keyboard Shortcuts editor](command:claudeTerminalManager.customizeShortcuts). The default is `Ctrl+Alt+0–9`."
+            "type": "boolean",
+            "default": false,
+            "description": "List all terminals in the sidebar, not just Claude sessions"
+          },
+          "claudeTerminalManager.status.verboseToolNames": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show tool name in status bar during PreToolUse (e.g. Running: Bash)"
+          },
+          "claudeTerminalManager.sidebar.showTerminalsFromAllWindows": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show terminals from all VS Code windows in the sidebar, not just the current window. Remote terminals show the project name next to their label."
+          },
+          "claudeTerminalManager.windowFocus.useMacOSAccessibility": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "On macOS, activate remote VS Code windows with the Accessibility API instead of the `code` CLI. This is faster, but requires Visual Studio Code to have Accessibility permission. If activation fails or the window title is ambiguous, the extension falls back to the `code` CLI."
+          },
+          "claudeTerminalManager.keyboard.enableTerminalShortcuts": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable keyboard shortcuts to focus terminals by their position in the sidebar. Default: Ctrl+Alt+0–9. Customize individual bindings in Keyboard Shortcuts (search 'Focus Session')."
+          },
+          "claudeTerminalManager.keyboard.customize": {
+            "type": "null",
+            "markdownDescription": "Rebind shortcuts in the [Keyboard Shortcuts editor](command:claudeTerminalManager.customizeShortcuts). The default is `Ctrl+Alt+0–9`."
+          },
+          "claudeTerminalManager.sidebar.density": {
+            "type": "string",
+            "enum": [
+              "comfortable",
+              "compact"
+            ],
+            "default": "comfortable",
+            "enumDescriptions": [
+              "Show the status line under each session.",
+              "One line per session; hide the status line."
+            ],
+            "description": "How much detail each session row shows."
+          },
+          "claudeTerminalManager.history.hours": {
+            "type": "number",
+            "default": 24,
+            "minimum": 0,
+            "description": "List sessions that ended within this many hours under each project. Set to 0 to hide finished sessions."
+          },
+          "claudeTerminalManager.newSession.location": {
+            "type": "string",
+            "enum": [
+              "editorMain",
+              "editor",
+              "beside",
+              "panel"
+            ],
+            "default": "editorMain",
+            "enumDescriptions": [
+              "First editor group — the main area, never a split.",
+              "Whichever editor group is active, which may be a split.",
+              "Split beside the active editor group.",
+              "Bottom terminal panel."
+            ],
+            "description": "Where New Claude Session and Resume open their terminal."
+          },
+          "claudeTerminalManager.newSession.command": {
+            "type": "string",
+            "default": "claude",
+            "description": "Command run in a new session terminal. Resuming appends \"--resume <id>\"."
+          },
+          "claudeTerminalManager.tickets.command": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Shell command printing ticket JSON on stdout, enabling the **Tickets** tab. Leave empty to hide the tab.\n\nExpected shape: `[{ \"ticket\": \"sc-1\", \"etat\": \"In Development\", \"titre\": \"...\", \"url\": \"...\", \"sessions\": [{ \"id\": \"<claude-session-uuid>\", \"nom\": \"...\", \"projet\": \"...\", \"fin\": 1700000000000 }] }]` (English keys `id`/`state`/`title`/`name`/`project`/`endedAt` are also accepted)."
+          },
+          "claudeTerminalManager.tickets.refreshSeconds": {
+            "type": "number",
+            "default": 60,
+            "minimum": 15,
+            "description": "How often to re-run the tickets command while the panel is visible."
+          }
+        }
+      },
+      {
+        "title": "Agent Terminal Manager — Hooks",
+        "properties": {
+          "claudeTerminalManager.hooks.manage": {
+            "type": "null",
+            "markdownDescription": "Manage agent hooks in `~/.claude/settings.json` and `~/.codex/hooks.json`:\n\n[$(plug) Install Hooks](command:claudeTerminalManager.installHooks) | [$(trash) Remove Hooks](command:claudeTerminalManager.removeHooks) | [$(search) Check Status](command:claudeTerminalManager.checkHooks)"
+          }
         }
       }
-    },
-    {
-      "title": "Agent Terminal Manager — Hooks",
-      "properties": {
-        "claudeTerminalManager.hooks.manage": {
-          "type": "null",
-          "markdownDescription": "Manage agent hooks in `~/.claude/settings.json` and `~/.codex/hooks.json`:\n\n[$(plug) Install Hooks](command:claudeTerminalManager.installHooks) | [$(trash) Remove Hooks](command:claudeTerminalManager.removeHooks) | [$(search) Check Status](command:claudeTerminalManager.checkHooks)"
-        }
-      }
-    }
     ],
     "keybindings": [
       {
@@ -377,7 +496,7 @@
   },
   "scripts": {
     "compile": "node esbuild.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/webview/tsconfig.json",
     "watch": "node esbuild.mjs --watch",
     "test": "vitest run",
     "test:watch": "vitest",

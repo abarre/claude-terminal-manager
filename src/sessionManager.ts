@@ -65,8 +65,13 @@ const makeSessionManagerEffect = (
             }
             return next
           })
-          // Schedule removal after 5 seconds without blocking the caller
+          // Schedule removal after 5 seconds without blocking the caller.
+          // SessionEnd also fires on /clear and on resume, so the session may
+          // be live again by the time this runs — only drop a row that is
+          // still retired.
           yield* SubscriptionRef.update(stateRef, (map) => {
+            const current = map.get(event.session_id)
+            if (current === undefined || current.status !== 'inactive') return map
             const next = new Map(map)
             next.delete(event.session_id)
             return next
@@ -74,18 +79,22 @@ const makeSessionManagerEffect = (
         } else {
           yield* SubscriptionRef.update(stateRef, (map) => {
             const existing = map.get(event.session_id)
-            const next = new Map(map)
-            if (existing === undefined) {
-              next.set(
-                event.session_id,
-                createSessionFromEvent(event, getVerboseMode()),
-              )
-            } else {
-              next.set(
-                event.session_id,
-                transitionSession(existing, event, getVerboseMode()),
-              )
+            if (existing !== undefined) {
+              const updated = transitionSession(existing, event, getVerboseMode())
+              // Keep the map identical on a no-op transition — the common
+              // case now that tool_completed fires on every tool call. Each
+              // change the stream carries costs a tree refresh, a
+              // workspaceState write and a window-registry file write.
+              if (updated === existing) return map
+              const next = new Map(map)
+              next.set(event.session_id, updated)
+              return next
             }
+            const next = new Map(map)
+            next.set(
+              event.session_id,
+              createSessionFromEvent(event, getVerboseMode()),
+            )
             return next
           })
         }

@@ -18,5 +18,5 @@
     "esModuleInterop": false
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "out", "test", "src/**/*.test.ts"]
+  "exclude": ["node_modules", "out", "test", "src/**/*.test.ts", "src/webview"]
 }

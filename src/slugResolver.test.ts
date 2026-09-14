@@ -136,6 +136,43 @@ describe('readLatestSlug', () => {
     }
   })
 
+  it('prefers the ai-title over the random slug', async () => {
+    // "wobbly-painting-grove" means nothing to a human; the ai-title does.
+    const lines = [
+      JSON.stringify({ type: 'user', slug: 'wobbly-painting-grove' }),
+      JSON.stringify({ type: 'ai-title', aiTitle: 'View by shortcut ticket', sessionId: 'abc' }),
+      JSON.stringify({ type: 'assistant', slug: 'wobbly-painting-grove' }),
+    ]
+    fs.writeFileSync(jsonlPath, lines.join('\n') + '\n')
+
+    const result = await Effect.runPromise(readLatestSlug(testCwd, sessionId))
+    expect(result).toBe('View by shortcut ticket')
+  })
+
+  it('takes the last ai-title, since it is refreshed as the topic moves', async () => {
+    const lines = [
+      JSON.stringify({ type: 'ai-title', aiTitle: 'An early guess', sessionId: 'abc' }),
+      JSON.stringify({ type: 'user', slug: 'wobbly-painting-grove' }),
+      JSON.stringify({ type: 'ai-title', aiTitle: 'What it became', sessionId: 'abc' }),
+    ]
+    fs.writeFileSync(jsonlPath, lines.join('\n') + '\n')
+
+    const result = await Effect.runPromise(readLatestSlug(testCwd, sessionId))
+    expect(result).toBe('What it became')
+  })
+
+  it('prefers an explicit rename over the ai-title', async () => {
+    const lines = [
+      JSON.stringify({ type: 'ai-title', aiTitle: 'Generated title', sessionId: 'abc' }),
+      JSON.stringify({ type: 'custom-title', customTitle: 'What I called it', sessionId: 'abc' }),
+      JSON.stringify({ type: 'user', slug: 'wobbly-painting-grove' }),
+    ]
+    fs.writeFileSync(jsonlPath, lines.join('\n') + '\n')
+
+    const result = await Effect.runPromise(readLatestSlug(testCwd, sessionId))
+    expect(result).toBe('What I called it')
+  })
+
   it('returns customTitle when present in file', async () => {
     const lines = [
       JSON.stringify({ type: 'user', slug: 'random-slug' }),

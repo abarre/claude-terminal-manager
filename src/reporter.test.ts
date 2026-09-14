@@ -256,4 +256,174 @@ describe('--source flag (T5.3)', () => {
     expect(parsed['pid']).toBe(123)
     expect(parsed['event']).toBe('session_start')
   })
+
+  it('maps PermissionRequest to permission_request with an Allow summary', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      {
+        session_id: 'sess-perm',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf   build' },
+      },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect(parsed['event']).toBe('permission_request')
+    expect(parsed['tool_name']).toBe('Bash')
+    expect(parsed['detail']).toBe('Allow Bash: rm -rf build?')
+  })
+
+  it('shows the question itself for an AskUserQuestion permission', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      {
+        session_id: 'sess-ask',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'AskUserQuestion',
+        tool_input: { questions: [{ question: 'Which database?' }] },
+      },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect(parsed['detail']).toBe('Which database?')
+  })
+
+  it('shortens an mcp tool name in the permission summary', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      {
+        session_id: 'sess-mcp',
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'mcp__shortcut__stories-update',
+        tool_input: {},
+      },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect(parsed['detail']).toBe('Allow shortcut/stories-update?')
+  })
+
+  it('maps StopFailure to stop so a failed turn does not strand as running', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      { session_id: 'sess-sf', hook_event_name: 'StopFailure' },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect(parsed['event']).toBe('stop')
+    expect(parsed['session_id']).toBe('sess-sf')
+  })
+
+  it('counts only still-running background tasks on Stop', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      {
+        session_id: 'sess-bg',
+        hook_event_name: 'Stop',
+        background_tasks: [
+          { id: 'a', status: 'running' },
+          { id: 'b', status: 'completed' },
+          { id: 'c' },
+        ],
+      },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    // 'c' has no status: unknown counts as active, since an over-count only
+    // delays the idle dot while an under-count fakes idleness.
+    expect(parsed['background_tasks']).toBe(2)
+  })
+
+  it('omits background_tasks entirely when the payload has no such field', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      { session_id: 'sess-legacy', hook_event_name: 'Stop' },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect('background_tasks' in parsed).toBe(false)
+  })
+
+  it('excludes the just-stopped agent from a SubagentStop count', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      {
+        session_id: 'sess-sub',
+        hook_event_name: 'SubagentStop',
+        agent_id: 'a',
+        background_tasks: [
+          { id: 'a', status: 'running' },
+          { id: 'z', status: 'running' },
+        ],
+      },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect(parsed['event']).toBe('subagent_stop')
+    expect(parsed['background_tasks']).toBe(1)
+  })
+
+  it('maps SessionEnd to session_end', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      { session_id: 'sess-end', hook_event_name: 'SessionEnd' },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect(parsed['event']).toBe('session_end')
+    expect(parsed['session_id']).toBe('sess-end')
+  })
+
+  it('sends tool_completed for an ordinary PostToolUse result', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      {
+        session_id: 'sess-done',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_response: { ok: true },
+      },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect(parsed['event']).toBe('tool_completed')
+    expect(parsed['tool_name']).toBe('Bash')
+  })
 })

@@ -5,6 +5,7 @@ import * as readline from 'node:readline'
 import { Effect, Schedule } from 'effect'
 
 const CUSTOM_TITLE_MARKER = '"custom-title"'
+const AI_TITLE_MARKER = '"ai-title"'
 
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 
@@ -20,6 +21,30 @@ const findLastCustomTitle = (chunk: string): string | undefined => {
       const obj = JSON.parse(line)
       if (obj.type === 'custom-title' && typeof obj.customTitle === 'string' && obj.customTitle.length > 0) {
         last = obj.customTitle as string
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return last
+}
+
+/**
+ * Search a text chunk for the last `aiTitle` value.
+ *
+ * Claude writes `{"type":"ai-title","aiTitle":"View by shortcut ticket"}` as a
+ * conversation earns a summary, refreshing it as the topic moves. This is the
+ * name a human recognises; `slug` is a random three-word identifier and means
+ * nothing to anyone.
+ */
+const findLastAiTitle = (chunk: string): string | undefined => {
+  let last: string | undefined
+  for (const line of chunk.split('\n')) {
+    if (!line.includes(AI_TITLE_MARKER)) continue
+    try {
+      const obj = JSON.parse(line)
+      if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string' && obj.aiTitle.length > 0) {
+        last = obj.aiTitle as string
       }
     } catch {
       // skip malformed lines
@@ -86,6 +111,67 @@ const readChunk = (fd: number, size: number, offset: number): string => {
 // 256 KB tail covers most session files entirely
 const TAIL_SIZE = 262144
 
+export interface ReadTitleOptions {
+  /**
+   * Re-scan the whole file when the tail read found no `customTitle`. Correct
+   * for the handful of live sessions, too expensive for a history sweep across
+   * every project folder — there the tail is good enough.
+   */
+  readonly fullScanFallback?: boolean
+  readonly tailSize?: number
+}
+
+/**
+ * Read the display title straight from a transcript path.
+ *
+ * Split out of `readLatestSlug` so the history index can reuse it without
+ * re-deriving the encoded project folder, which is lossy in that direction.
+ */
+export const readTitleFromFile = async (
+  jsonlPath: string,
+  options: ReadTitleOptions = {},
+): Promise<string | undefined> => {
+  const fullScanFallback = options.fullScanFallback ?? true
+  const maxTail = options.tailSize ?? TAIL_SIZE
+  let fd: number | undefined
+  try {
+    const stat = fs.statSync(jsonlPath)
+    fd = fs.openSync(jsonlPath, 'r')
+
+    // Read the tail (up to maxTail, or the whole file if smaller)
+    const tailSize = Math.min(stat.size, maxTail)
+    const tailOffset = Math.max(0, stat.size - tailSize)
+    const tail = readChunk(fd, tailSize, tailOffset)
+
+    // Priority: an explicit rename, then Claude's generated title, then the
+    // random slug — which is only ever better than nothing.
+    const tailCustomTitle = findLastCustomTitle(tail)
+    if (tailCustomTitle !== undefined) return tailCustomTitle
+
+    const tailAiTitle = findLastAiTitle(tail)
+    if (tailAiTitle !== undefined) return tailAiTitle
+
+    const tailSlug = findLastSlug(tail)
+
+    // If the tail covered the whole file, we're done
+    if (tailOffset === 0) return tailSlug
+    if (!fullScanFallback) return tailSlug
+
+    // File is larger than our tail read. The customTitle might be
+    // earlier in the file. Do a full streaming scan.
+    fs.closeSync(fd)
+    fd = undefined
+    const fullCustomTitle = await streamScanCustomTitle(jsonlPath)
+    return fullCustomTitle ?? tailSlug
+  } catch {
+    return undefined
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* best-effort */ }
+    }
+  }
+}
+
 /**
  * Read the display title from a Claude Code conversation JSONL file.
  *
@@ -116,6 +202,13 @@ export const resolveSessionSlug = (
         // This only runs at initial detection (with retries), not periodically.
         const customTitle = await streamScanCustomTitle(jsonlPath)
         if (customTitle !== undefined) return customTitle
+
+        // A young session has no title yet; the tail read below is what picks
+        // one up once Claude writes it.
+        const tailTitle = await readTitleFromFile(jsonlPath, {
+          fullScanFallback: false,
+        })
+        if (tailTitle !== undefined) return tailTitle
 
         // Fallback: read the first 4KB to find the slug field
         let fd: number | undefined
@@ -182,39 +275,5 @@ export const readLatestSlug = (
     `${sessionId}.jsonl`,
   )
 
-  return Effect.promise(async (): Promise<string | undefined> => {
-    let fd: number | undefined
-    try {
-      const stat = fs.statSync(jsonlPath)
-      fd = fs.openSync(jsonlPath, 'r')
-
-      // Read the tail (up to 256 KB, or the whole file if smaller)
-      const tailSize = Math.min(stat.size, TAIL_SIZE)
-      const tailOffset = Math.max(0, stat.size - tailSize)
-      const tail = readChunk(fd, tailSize, tailOffset)
-
-      // Check tail for customTitle first (last one wins)
-      const tailCustomTitle = findLastCustomTitle(tail)
-      if (tailCustomTitle !== undefined) return tailCustomTitle
-
-      // Check tail for slug as a fallback value
-      const tailSlug = findLastSlug(tail)
-
-      // If the tail covered the whole file, we're done
-      if (tailOffset === 0) return tailSlug
-
-      // File is larger than our tail read. The customTitle might be
-      // earlier in the file. Do a full streaming scan.
-      fs.closeSync(fd)
-      fd = undefined
-      const fullCustomTitle = await streamScanCustomTitle(jsonlPath)
-      return fullCustomTitle ?? tailSlug
-    } catch {
-      return undefined
-    } finally {
-      if (fd !== undefined) {
-        try { fs.closeSync(fd) } catch { /* best-effort */ }
-      }
-    }
-  })
+  return Effect.promise(() => readTitleFromFile(jsonlPath))
 }

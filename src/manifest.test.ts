@@ -13,44 +13,83 @@ interface MenuEntry {
   group?: string
 }
 
+interface ViewEntry {
+  id: string
+  name: string
+  type?: string
+}
+
 interface PackageJson {
   contributes: {
-    menus: {
-      'view/item/context': MenuEntry[]
-    }
+    views: Record<string, ViewEntry[]>
+    menus: Record<string, MenuEntry[]>
+    commands: Array<{ command: string }>
   }
 }
 
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as PackageJson
-const menuEntries = pkg.contributes.menus['view/item/context']
+const panel = pkg.contributes.views['claudeTerminalManagerSidebar']![0]!
+const menus = pkg.contributes.menus
 
 describe('manifest', () => {
-  describe('inline icons are limited to close actions', () => {
-    it('only closeTerminal entries remain inline', () => {
-      const inlineEntries = menuEntries.filter((entry) => entry.group === 'inline')
-      expect(inlineEntries).toHaveLength(2)
-      expect(inlineEntries.every((entry) => entry.command === 'claudeTerminalManager.closeTerminal')).toBe(true)
+  describe('the panel is a webview', () => {
+    it('declares the panel view as type webview', () => {
+      expect(panel.id).toBe('claudeTerminalManagerPanel')
+      expect(panel.type).toBe('webview')
     })
 
-    it('renameSession is not an inline menu entry', () => {
-      const entry = menuEntries.find(
-        (entry) => entry.command === 'claudeTerminalManager.renameSession',
-      )
-      expect(entry).toBeUndefined()
+    it('contributes no tree item menus, since there are no tree items', () => {
+      expect(menus['view/item/context']).toBeUndefined()
+    })
+  })
+
+  describe('view title actions', () => {
+    const title = menus['view/title'] ?? []
+
+    it('offers new session, refresh and reset', () => {
+      expect(title.map((e) => e.command)).toEqual([
+        'claudeTerminalManager.newSession',
+        'claudeTerminalManager.refreshTickets',
+        'claudeTerminalManager.resetState',
+      ])
     })
 
-    it('focusTerminal is not an inline menu entry', () => {
-      const entry = menuEntries.find(
-        (entry) => entry.command === 'claudeTerminalManager.focusTerminal',
-      )
-      expect(entry).toBeUndefined()
+    it('puts the new session button first in the navigation group', () => {
+      const first = title[0]!
+      expect(first.group).toBe('navigation@1')
+      expect(first.when).toBe('view == claudeTerminalManagerPanel')
+    })
+  })
+
+  describe('command palette hygiene', () => {
+    const hidden = new Set(
+      (menus['commandPalette'] ?? [])
+        .filter((e) => e.when === 'false')
+        .map((e) => e.command),
+    )
+
+    it.each([
+      'claudeTerminalManager.resumeSession',
+      'claudeTerminalManager.focusSession',
+      'claudeTerminalManager.closeSession',
+      'claudeTerminalManager.renameSessionById',
+    ])('hides %s, which is useless without an argument', (command) => {
+      expect(hidden.has(command)).toBe(true)
     })
 
-    it('focusRemoteTerminal is not an inline menu entry', () => {
-      const entry = menuEntries.find(
-        (entry) => entry.command === 'claudeTerminalManager.focusRemoteTerminal',
-      )
-      expect(entry).toBeUndefined()
+    it('leaves newSession visible in the palette', () => {
+      expect(hidden.has('claudeTerminalManager.newSession')).toBe(false)
+    })
+  })
+
+  describe('no orphan menu entries', () => {
+    it('every menu command is a declared command', () => {
+      const declared = new Set(pkg.contributes.commands.map((c) => c.command))
+      for (const entries of Object.values(menus)) {
+        for (const entry of entries) {
+          expect(declared).toContain(entry.command)
+        }
+      }
     })
   })
 })

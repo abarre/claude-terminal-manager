@@ -2,6 +2,9 @@ import * as vscode from 'vscode'
 import type { SessionRecord } from './stateMachine.js'
 import { getShowNonClaudeTerminals, getShowTerminalsFromAllWindows } from './settings.js'
 import type { WindowEntry, RemoteTerminalInfo } from './windowRegistry.js'
+import type { RemoteSessionInput, TerminalInput } from './viewModel.js'
+
+const LIVENESS_TTL_MS = 1000
 
 export type TerminalNode = {
   readonly kind: 'terminal'
@@ -57,14 +60,18 @@ export type SectionNode = {
 
 export type TreeNode = TerminalNode | SessionNode | RemoteTerminalNode | RemoteSessionNode | SectionNode
 
-export class ClaudeTerminalProvider
-  implements vscode.TreeDataProvider<TreeNode>
-{
-  private readonly _emitter = new vscode.EventEmitter<
-    TreeNode | TreeNode[] | undefined | null | void
-  >()
+/**
+ * Owns session state, terminal correlation and the cross-window registry.
+ *
+ * It used to render the sidebar as a TreeView as well; the panel is a webview
+ * now (see `panelProvider.ts`), which consumes this through `getSessions()` and
+ * friends and renders from a pure view model.
+ */
+export class ClaudeTerminalProvider {
+  /** Fired whenever the session set changes; the webview panel re-renders. */
+  private readonly _changeEmitter = new vscode.EventEmitter<void>()
 
-  readonly onDidChangeTreeData = this._emitter.event
+  readonly onDidChangeSessions = this._changeEmitter.event
 
   private readonly _disposables: vscode.Disposable[] = []
 
@@ -82,15 +89,14 @@ export class ClaudeTerminalProvider
   /** Maps Terminal object → PID for synchronous reverse lookup */
   private _terminalToPidMap = new Map<vscode.Terminal, number>()
 
+  /** Memoized `process.kill(pid, 0)` results, so pushes don't re-probe. */
+  private _livenessCache = new Map<number, { alive: boolean; at: number }>()
+
   /** Tracks optimistic attention clears to prevent subscription callback overwrites */
   private _pendingAttentionClears = new Map<string, number>()
 
   /** Maps node identity key → 0-based shortcut index across all sections */
   private _shortcutIndexMap = new Map<string, number>()
-
-  /** Cached root section nodes from the last getChildren(undefined) call.
-   *  Used to fire targeted refreshes that avoid the root-level loading indicator. */
-  private _cachedRootSections: TreeNode[] = []
 
   constructor(
     subscribeToSessions?: (
@@ -129,6 +135,8 @@ export class ClaudeTerminalProvider
         if (closedPid !== undefined) {
           this._onTerminalClosed?.(closedPid)
         }
+        // The agent dies with its tab, so any cached liveness is now stale.
+        this._livenessCache.clear()
         this._refreshSections()
       }),
     )
@@ -259,6 +267,128 @@ export class ClaudeTerminalProvider
     return this._sessions.find((session) => session.terminalId === pid)
   }
 
+  /**
+   * Sessions this window owns that are genuinely still running.
+   *
+   * A record outlives its process: closing the terminal tab kills the agent but
+   * leaves the record behind until the reaper catches it. Filtering on real
+   * liveness is what lets a closed session drop out of the live rows and come
+   * back as a resumable one, instead of sitting there unfocusable forever.
+   */
+  getSessions(): ReadonlyArray<SessionRecord> {
+    return this._sessions.filter(
+      (record) => record.pid <= 0 || this._isProcessAliveCached(record.pid),
+    )
+  }
+
+  /**
+   * `process.kill(pid, 0)` is cheap but this runs on every panel push, which a
+   * single turn triggers many times. One syscall per pid per second is plenty.
+   */
+  private _isProcessAliveCached(pid: number): boolean {
+    const now = Date.now()
+    const cached = this._livenessCache.get(pid)
+    if (cached !== undefined && now - cached.at < LIVENESS_TTL_MS) {
+      return cached.alive
+    }
+    const alive = this._isProcessAlive(pid)
+    this._livenessCache.set(pid, { alive, at: now })
+    return alive
+  }
+
+  /** Resolve the terminal hosting a session, via its correlated pid. */
+  getTerminalForSession(sessionId: string): vscode.Terminal | undefined {
+    const session = this._sessions.find((s) => s.sessionId === sessionId)
+    if (session?.terminalId === undefined) return undefined
+    return this._terminalPidMap.get(session.terminalId)
+  }
+
+  getWorkspaceName(): string | undefined {
+    return this._currentWorkspaceName
+  }
+
+  getBranch(): string | undefined {
+    return this._currentBranch
+  }
+
+  /** Live entries for the other VS Code windows, as last read from the registry. */
+  getRemoteWindows(): ReadonlyArray<WindowEntry> {
+    return this._remoteEntries
+  }
+
+  /** Every cwd this window knows about, used to shortcut history path decoding. */
+  getKnownCwds(): readonly string[] {
+    const cwds = new Set<string>()
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      cwds.add(folder.uri.fsPath)
+    }
+    for (const session of this._sessions) {
+      if (session.cwd !== undefined) cwds.add(session.cwd)
+    }
+    for (const entry of this._remoteEntries) {
+      if (entry.workspaceFolderPath !== undefined) cwds.add(entry.workspaceFolderPath)
+    }
+    return [...cwds]
+  }
+
+  /**
+   * Flatten the window registry into per-session rows for the panel. Remote
+   * fields are all optional on the wire, so a window running an older version
+   * degrades to what it does publish rather than dropping out of the list.
+   */
+  getRemoteSessionInputs(): readonly RemoteSessionInput[] {
+    if (!getShowTerminalsFromAllWindows()) return []
+    const out: RemoteSessionInput[] = []
+    for (const entry of this._remoteEntries) {
+      for (const terminal of entry.terminals) {
+        const session = terminal.session
+        if (session === undefined) continue
+        out.push({
+          windowId: entry.windowId,
+          socketPath: entry.socketPath,
+          terminalName: terminal.name,
+          terminalPid: terminal.pid,
+          workspaceName: entry.workspaceName,
+          workspaceFolderPath: entry.workspaceFolderPath,
+          branch: session.customName ?? entry.branch,
+          sessionId: session.sessionId,
+          status: session.status,
+          subtitle: session.subtitle,
+          statusLabel: session.statusLabel,
+          needsAttention: session.needsAttention ?? false,
+          slug: session.slug,
+          source: session.source ?? 'claude',
+          cwd: session.cwd,
+          backgroundTasks: session.backgroundTasks ?? 0,
+          lastEventAt: session.lastEventAt,
+        })
+      }
+    }
+    return out
+  }
+
+  /**
+   * Terminals with no agent session attached. Empty unless the user opted in
+   * with `sidebar.showNonClaudeTerminals`.
+   */
+  getPlainTerminals(): readonly TerminalInput[] {
+    if (!getShowNonClaudeTerminals()) return []
+    const claimed = new Set<vscode.Terminal>()
+    for (const session of this._sessions) {
+      if (session.terminalId === undefined) continue
+      const terminal = this._terminalPidMap.get(session.terminalId)
+      if (terminal !== undefined) claimed.add(terminal)
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+    return vscode.window.terminals
+      .filter((terminal) => !claimed.has(terminal))
+      .map((terminal) => ({
+        pid: this._terminalToPidMap.get(terminal),
+        name: terminal.name,
+        cwd: folder,
+      }))
+  }
+
   getTerminalInfoForRegistry(): RemoteTerminalInfo[] {
     return vscode.window.terminals.map((terminal) => {
       const session = this._sessions.find(
@@ -281,6 +411,9 @@ export class ClaudeTerminalProvider
                 ...(session.slug !== undefined ? { slug: session.slug } : {}),
                 ...(session.customName !== undefined ? { customName: session.customName } : {}),
                 source: session.source,
+                ...(session.cwd !== undefined ? { cwd: session.cwd } : {}),
+                backgroundTasks: session.backgroundTasks,
+                lastEventAt: session.lastEventAt,
               },
             }
           : {}),
@@ -355,243 +488,7 @@ export class ClaudeTerminalProvider
     }))
   }
 
-  private _getSessionStatusIcon(
-    status: string,
-    needsAttention: boolean,
-  ): vscode.ThemeIcon {
-    if (needsAttention) return new vscode.ThemeIcon('circle-filled')
-    if (status === 'running') return new vscode.ThemeIcon('sync~spin')
-    return new vscode.ThemeIcon('circle-outline')
-  }
 
-  private _getSessionDescription(
-    status: string,
-    statusLabel: string | undefined,
-    subtitle: string | undefined,
-  ): string | undefined {
-    if (status !== 'running') return subtitle
-    return [statusLabel ?? 'Running', subtitle]
-      .filter((part): part is string => part !== undefined)
-      .join(' — ')
-  }
-
-  private _getSessionResourceUri(
-    scheme: 'ctm' | 'ctm-status',
-    path: string,
-  ): vscode.Uri {
-    return vscode.Uri.from({ scheme, path })
-  }
-
-  getTreeItem(node: TreeNode): vscode.TreeItem {
-    if (node.kind === 'section') {
-      const name = node.workspaceName ?? (node.sectionType === 'local' ? 'Local' : 'Remote')
-      const label = node.branch !== undefined ? `${name} - ${node.branch}` : name
-      const item = new vscode.TreeItem(
-        label,
-        vscode.TreeItemCollapsibleState.Expanded,
-      )
-      item.iconPath = new vscode.ThemeIcon(
-        node.sectionType === 'local' ? 'window' : 'remote',
-      )
-      item.contextValue = node.sectionType === 'local' ? 'sectionLocal' : 'sectionRemote'
-      item.command = {
-        command: 'claudeTerminalManager.focusWindow',
-        title: 'Focus Window',
-        arguments: [node],
-      }
-      if (node.sectionType === 'local') {
-        item.resourceUri = vscode.Uri.from({ scheme: 'ctm', path: '/section' })
-      }
-      return item
-    }
-
-    if (node.kind === 'terminal') {
-      const termShortcutIdx = this.getShortcutIndex(node)
-      const terminalLabel = termShortcutIdx !== undefined
-        ? `${termShortcutIdx}: ${node.terminal.name}`
-        : node.terminal.name
-      const item = new vscode.TreeItem(
-        terminalLabel,
-        vscode.TreeItemCollapsibleState.None,
-      )
-      item.iconPath = new vscode.ThemeIcon('terminal')
-      item.contextValue = 'terminal'
-      item.command = {
-        command: 'claudeTerminalManager.focusTerminal',
-        title: 'Focus Terminal',
-        arguments: [node],
-      }
-      if (node.pid !== undefined) {
-        item.resourceUri = vscode.Uri.from({ scheme: 'ctm', path: '/terminal/' + node.pid })
-      }
-      return item
-    }
-
-    if (node.kind === 'session') {
-      const storedName = this._workspaceState?.get<string>(
-        'session:name:' + node.record.sessionId,
-      )
-      const fallbackName = node.record.source === 'codex' ? 'Codex' : 'Claude'
-      const baseLabel =
-        storedName ??
-        node.record.slug ??
-        fallbackName
-      const isActiveTerminal = node.terminal !== undefined
-        && node.terminal === vscode.window.activeTerminal
-      const effectiveNeedsAttention = node.record.needsAttention && (!isActiveTerminal || node.record.activeBlockingTool !== undefined)
-      const sessionShortcutIdx = this.getShortcutIndex(node)
-      const label = sessionShortcutIdx !== undefined
-        ? `${sessionShortcutIdx}: ${baseLabel}`
-        : baseLabel
-      const item = new vscode.TreeItem(
-        label,
-        vscode.TreeItemCollapsibleState.None,
-      )
-      item.contextValue = 'claudeSession'
-      item.command = {
-        command: 'claudeTerminalManager.focusTerminal',
-        title: 'Focus Terminal',
-        arguments: [node],
-      }
-      item.iconPath = this._getSessionStatusIcon(
-        node.record.status,
-        effectiveNeedsAttention,
-      )
-      const description = this._getSessionDescription(
-        node.record.status,
-        node.record.statusLabel,
-        node.record.subtitle,
-      )
-      if (description !== undefined) {
-        item.description = description
-      }
-      const toolName = node.record.source === 'codex' ? 'Codex' : 'Claude'
-      const runningTooltip = node.record.status === 'running'
-        ? `\n\n${node.record.statusLabel ?? 'Running'}`
-        : ''
-      item.tooltip = new vscode.MarkdownString(
-        `**${toolName} Session:** ` +
-          node.record.sessionId +
-          '\n\n' +
-          (node.record.subtitle ?? 'No prompt yet') +
-          runningTooltip,
-      )
-      item.accessibilityInformation = {
-        label:
-          baseLabel +
-          ': ' +
-          (node.record.subtitle ?? 'waiting') +
-          (node.record.status === 'running' ? ', running' : ''),
-      }
-      item.resourceUri = this._getSessionResourceUri(
-        'ctm',
-        '/session/' + node.record.sessionId,
-      )
-      return item
-    }
-
-    if (node.kind === 'remoteTerminal') {
-      const hasSession = node.session !== undefined
-      const needsAttention = node.session?.needsAttention ?? false
-      const remoteSource = node.session?.source ?? 'claude'
-      const remoteFallback = remoteSource === 'codex' ? 'Codex' : 'Claude'
-      const baseLabel = hasSession
-        ? (node.session.slug ?? remoteFallback)
-        : node.terminalName
-      const remoteShortcutIdx = this.getShortcutIndex(node)
-      const label = remoteShortcutIdx !== undefined
-        ? `${remoteShortcutIdx}: ${baseLabel}`
-        : baseLabel
-      const item = new vscode.TreeItem(
-        label,
-        vscode.TreeItemCollapsibleState.None,
-      )
-      if (!hasSession) {
-        item.iconPath = new vscode.ThemeIcon('terminal-tmux')
-      }
-      item.contextValue = 'remoteTerminal'
-      item.command = {
-        command: 'claudeTerminalManager.focusRemoteTerminal',
-        title: 'Focus Remote Terminal',
-        arguments: [node],
-      }
-      if (node.session !== undefined) {
-        item.iconPath = this._getSessionStatusIcon(
-          node.session.status,
-          needsAttention,
-        )
-        const description = this._getSessionDescription(
-          node.session.status,
-          node.session.statusLabel,
-          node.session.subtitle,
-        )
-        if (description !== undefined) {
-          item.description = description
-        }
-        item.resourceUri = this._getSessionResourceUri(
-          'ctm-status',
-          `/remote-session/${node.windowId}/${node.session.sessionId}`,
-        )
-      }
-      const remoteToolName = remoteSource === 'codex' ? 'Codex' : 'Claude'
-      const remoteRunningTooltip = node.session?.status === 'running'
-        ? `\n\n${node.session.statusLabel ?? 'Running'}`
-        : ''
-      item.tooltip = new vscode.MarkdownString(
-        hasSession
-          ? `**Remote ${remoteToolName} session** in window: ` +
-            node.workspaceName +
-            remoteRunningTooltip
-          : '**Remote terminal** in window: ' + node.workspaceName,
-      )
-      return item
-    }
-
-    if (node.kind === 'remoteSession') {
-      const rsToolName = (node.source ?? 'claude') === 'codex' ? 'Codex' : 'Claude'
-      const baseLabel = `${rsToolName}: ${node.sessionId.slice(0, 8)}`
-      const needsAttention =
-        node.needsAttention ?? node.status === 'waiting_for_input'
-      const rsShortcutIdx = this.getShortcutIndex(node)
-      const label = rsShortcutIdx !== undefined
-        ? `${rsShortcutIdx}: ${baseLabel}`
-        : baseLabel
-      const item = new vscode.TreeItem(
-        label,
-        vscode.TreeItemCollapsibleState.None,
-      )
-      item.iconPath = this._getSessionStatusIcon(
-        node.status,
-        needsAttention,
-      )
-      const description = this._getSessionDescription(
-        node.status,
-        node.statusLabel,
-        node.subtitle,
-      )
-      if (description !== undefined) {
-        item.description = description
-      }
-      const rsRunningTooltip = node.status === 'running'
-        ? `\n\n${node.statusLabel ?? 'Running'}`
-        : ''
-      item.tooltip = new vscode.MarkdownString(
-        '**Session:** ' +
-          node.sessionId +
-          '\n\n' +
-          (node.subtitle ?? 'No prompt yet') +
-          rsRunningTooltip,
-      )
-      item.resourceUri = this._getSessionResourceUri(
-        'ctm-status',
-        '/remote-session/' + node.sessionId,
-      )
-      return item
-    }
-
-    // Exhaustive: all TreeNode kinds handled above
-    return new vscode.TreeItem('unknown')
-  }
 
   /** Identity key for a tree node, used for shortcut index lookup */
   private _getNodeKey(node: TreeNode): string | undefined {
@@ -675,22 +572,6 @@ export class ClaudeTerminalProvider
     return this._shortcutIndexMap.get(key)
   }
 
-  getParent(node: TreeNode): TreeNode | undefined {
-    if (node.kind === 'section') return undefined
-    if (node.kind === 'session' || node.kind === 'terminal') {
-      return this._buildRootSections().find((section) => section.sectionType === 'local')
-    }
-    if (node.kind === 'remoteTerminal') {
-      return this._buildRootSections().find(
-        (section) => section.sectionType === 'remote' && section.windowId === node.windowId,
-      )
-    }
-    return undefined
-  }
-
-  getRootSections(): SectionNode[] {
-    return this._buildRootSections()
-  }
 
   getChildren(parent?: TreeNode): TreeNode[] {
     if (parent !== undefined) {
@@ -708,33 +589,17 @@ export class ClaudeTerminalProvider
     }
 
     // Root level — return section nodes
-    const sections = this._buildRootSections()
-
-    console.log('[CTM] getChildren root sections:', sections.map((section) => {
-      const name = section.workspaceName ?? ''
-      return section.branch !== undefined ? `${name} - ${section.branch}` : name
-    }))
-
-    this._cachedRootSections = sections
-    return sections
+    return this._buildRootSections()
   }
 
-  /** Refresh children of cached section nodes without triggering the root loading indicator.
-   *  Falls back to a full root refresh if no sections are cached yet. */
   private _refreshSections(): void {
     this._recomputeShortcutIndices()
-    if (this._cachedRootSections.length > 0) {
-      this._emitter.fire(this._cachedRootSections)
-    } else {
-      this._emitter.fire()
-    }
+    this._changeEmitter.fire()
   }
 
-  /** Full root refresh — rebuilds sections. Needed when sections are added/removed. */
+  /** Kept distinct from _refreshSections for callers that mean "sections changed". */
   private _refreshRoot(): void {
-    this._recomputeShortcutIndices()
-    this._cachedRootSections = []
-    this._emitter.fire()
+    this._refreshSections()
   }
 
   /** Optimistically clear needsAttention on a session and refresh the tree immediately */
