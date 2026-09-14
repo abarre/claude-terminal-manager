@@ -544,10 +544,16 @@ body.compact {
 }
 
 /* Per-project new-session button, revealed on hover like the row actions. */
+/*
+ * Always in flow, only hidden — toggling `display` would let an 18px button
+ * grow a header whose text line is 17px, shifting everything below it on hover
+ * and focus. Reserving the space also keeps the count badge from jumping.
+ */
 .grp .add {
   width: 18px;
   height: 18px;
-  display: none;
+  display: grid;
+  visibility: hidden;
   place-items: center;
   border-radius: 4px;
   color: var(--vscode-descriptionForeground);
@@ -556,7 +562,7 @@ body.compact {
 
 .grp:hover .add,
 .grp:focus-within .add {
-  display: grid;
+  visibility: visible;
 }
 
 .grp .add:hover {
