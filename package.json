@@ -333,7 +333,13 @@
             "default": "claude",
             "description": "Command run in a new session terminal. Resuming appends \"--resume <id>\"."
           },
-          "claudeTerminalManager.tickets.command": {
+          "claudeTerminalManager.newSession.resumeAutocompact": {
+        "type": "number",
+        "default": 400000,
+        "minimum": 0,
+        "markdownDescription": "Auto-compact window, in tokens, passed as `--autocompact` when resuming a session \u2014 a resumed conversation is already large, and the automatic window would compact it straight away. Claude accepts 100000\u20131000000. Set to 0 to leave the window alone."
+      },
+      "claudeTerminalManager.tickets.command": {
             "type": "string",
             "default": "",
             "markdownDescription": "Shell command printing ticket JSON on stdout, enabling the **Tickets** tab. Leave empty to hide the tab.\n\nExpected shape: `[{ \"ticket\": \"sc-1\", \"etat\": \"In Development\", \"titre\": \"...\", \"url\": \"...\", \"sessions\": [{ \"id\": \"<claude-session-uuid>\", \"nom\": \"...\", \"projet\": \"...\", \"fin\": 1700000000000 }] }]` (English keys `id`/`state`/`title`/`name`/`project`/`endedAt` are also accepted)."

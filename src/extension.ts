@@ -14,6 +14,7 @@ import type { SessionNode, TerminalNode, RemoteTerminalNode, SectionNode } from 
 import {
   getNewSessionCommand,
   getNewSessionLocation,
+  getResumeAutocompact,
   getUseMacOSAccessibilityForWindowFocus,
   getVerboseToolNames,
 } from './settings.js'
@@ -990,12 +991,32 @@ export function activate(context: vscode.ExtensionContext): void {
   )
   context.subscriptions.push(newSessionDisposable)
 
+  /**
+   * A resumed conversation comes back already large, so Claude's automatic
+   * window would compact it almost immediately — losing the history the user
+   * came back for. Widen it to the configured size instead.
+   *
+   * Claude rejects a window outside 100k–1M outright, which would leave the
+   * user staring at a usage error instead of their session, so anything else
+   * is dropped rather than passed on.
+   */
+  const resumeCommand = (command: string, sessionId: string): string => {
+    const tokens = getResumeAutocompact()
+    const usable = tokens >= 100_000 && tokens <= 1_000_000
+    if (tokens > 0 && !usable) {
+      outputChannel.appendLine(
+        `[CTM] ignoring resumeAutocompact=${tokens}: Claude accepts 100000-1000000`,
+      )
+    }
+    return `${command} --resume ${sessionId}${usable ? ` --autocompact ${tokens}` : ''}`
+  }
+
   const openLocally = (cwd: string, sessionId: string | undefined): void => {
     const command = getNewSessionCommand()
     openAgentTerminal(
       path.basename(cwd),
       cwd,
-      sessionId === undefined ? command : `${command} --resume ${sessionId}`,
+      sessionId === undefined ? command : resumeCommand(command, sessionId),
     )
   }
 

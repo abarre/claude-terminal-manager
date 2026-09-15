@@ -3,6 +3,7 @@ import type { ClaudeTerminalProvider } from './treeProvider.js'
 import { buildViewModel, resolveShortcut } from './viewModel.js'
 import type { HistoryEntry, TicketRecord, ViewModel } from './viewModel.js'
 import { readSessionHistory } from './sessionHistory.js'
+import { readSessionContextTokens } from './contextSize.js'
 import { runTicketCommand } from './ticketProvider.js'
 import {
   getHistoryHours,
@@ -15,6 +16,8 @@ import type { FromWebview, PanelView, StateMessage } from './webview/protocol.js
 
 const VIEW_KEY = 'panel:view'
 const HISTORY_REFRESH_MS = 60_000
+/** A live session's context grows turn by turn, so it is re-read often. */
+const CONTEXT_REFRESH_MS = 5_000
 
 /** Coalesce the bursts of session events a single turn produces. */
 const PUSH_DEBOUNCE_MS = 60
@@ -34,6 +37,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
 
   private _view: vscode.WebviewView | undefined
   private _history: readonly HistoryEntry[] = []
+  private _context = new Map<string, number>()
   private _tickets: readonly TicketRecord[] | undefined
   private _lastModel: ViewModel | undefined
   private _lastLiveIds = new Set<string>()
@@ -81,6 +85,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
 
     void this.refreshHistory()
     void this.refreshTickets()
+    this.refreshContext()
     this.startTimers()
   }
 
@@ -90,6 +95,11 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
       setInterval(() => {
         if (this._view?.visible === true) void this.refreshHistory()
       }, HISTORY_REFRESH_MS),
+    )
+    this._timers.push(
+      setInterval(() => {
+        if (this._view?.visible === true) this.refreshContext()
+      }, CONTEXT_REFRESH_MS),
     )
     this._timers.push(
       setInterval(
@@ -116,6 +126,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
       now: Date.now(),
       knownCwds: this._provider.getKnownCwds(),
     })
+    this.refreshContext()
     this.schedulePush()
   }
 
@@ -135,6 +146,42 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
       log: this._log,
     })
     this.schedulePush()
+  }
+
+  /**
+   * Re-read every visible session's context size.
+   *
+   * Reads are mtime-cached, so a pass over unchanged transcripts costs a stat
+   * each. Only a changed number pushes, otherwise the panel would rebuild
+   * itself every five seconds for nothing.
+   */
+  refreshContext(): void {
+    const next = new Map<string, number>()
+    const take = (id: string, cwd: string | undefined): void => {
+      if (cwd === undefined || next.has(id)) return
+      const tokens = readSessionContextTokens(cwd, id)
+      if (tokens !== undefined) next.set(id, tokens)
+    }
+
+    for (const session of this._provider.getSessions()) {
+      take(session.sessionId, session.cwd)
+    }
+    for (const remote of this._provider.getRemoteSessionInputs()) {
+      take(remote.sessionId, remote.cwd)
+    }
+    for (const entry of this._history) take(entry.id, entry.cwd)
+
+    let changed = next.size !== this._context.size
+    if (!changed) {
+      for (const [id, tokens] of next) {
+        if (this._context.get(id) !== tokens) {
+          changed = true
+          break
+        }
+      }
+    }
+    this._context = next
+    if (changed) this.schedulePush()
   }
 
   private get view(): PanelView {
@@ -174,6 +221,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
           : this._provider.getTerminalPid(vscode.window.activeTerminal),
       terminals: this._provider.getPlainTerminals(),
       storedName: (id) => this._state.get<string>(`session:name:${id}`),
+      contextTokens: (id) => this._context.get(id),
       shortcutsEnabled,
     })
     this._lastModel = model

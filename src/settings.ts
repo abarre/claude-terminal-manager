@@ -58,3 +58,9 @@ export const getNewSessionCommand = (): string =>
   vscode.workspace
     .getConfiguration('claudeTerminalManager')
     .get<string>('newSession.command', 'claude')
+
+/** Auto-compact window passed to `--autocompact` on resume. 0 omits the flag. */
+export const getResumeAutocompact = (): number =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<number>('newSession.resumeAutocompact', 400_000)

@@ -13,6 +13,7 @@ import {
   getVerboseToolNames,
   getShowTerminalsFromAllWindows,
   getUseMacOSAccessibilityForWindowFocus,
+  getResumeAutocompact,
 } from './settings.js'
 import * as vscode from 'vscode'
 
@@ -125,6 +126,23 @@ describe('settings', () => {
       )
 
       expect(getUseMacOSAccessibilityForWindowFocus()).toBe(false)
+    })
+  })
+
+  describe('getResumeAutocompact', () => {
+    it('reads newSession.resumeAutocompact with a 400k default', () => {
+      mockGet.mockImplementation(
+        (_key: string, defaultValue: number) => defaultValue,
+      )
+
+      expect(getResumeAutocompact()).toBe(400_000)
+      expect(mockGet).toHaveBeenCalledWith('newSession.resumeAutocompact', 400_000)
+    })
+
+    it('returns what the user configured', () => {
+      mockGet.mockReturnValue(0)
+
+      expect(getResumeAutocompact()).toBe(0)
     })
   })
 })

@@ -34,6 +34,13 @@ so you can find them without reading. Projects sort the same way: a project with
 a session waiting on you outranks one that is merely running, which outranks an
 idle one.
 
+Next to the age, each row shows how much context the session is carrying —
+`58k`, `400k` — read from its transcript, so you can see which conversation is
+about to compact before you go back into it. Project names are coloured, all in
+the same blue, so a project reads as a project wherever it appears; in the
+**Tickets** tab each workflow state gets a colour of its own, red for blocked
+through to green for shipped.
+
 Set `claudeTerminalManager.sidebar.density` to `compact` to drop the status line
 and get one line per session.
 
@@ -236,6 +243,12 @@ This is the reason the extension opens sessions itself rather than deferring to 
 **Default:** `claude`
 
 The command run in a new session terminal. Resuming appends `--resume <id>`.
+
+### `claudeTerminalManager.newSession.resumeAutocompact`
+
+**Default:** `400000`
+
+Auto-compact window, in tokens, appended as `--autocompact <tokens>` when a session is resumed. A resumed conversation comes back already large, and Claude's automatic window would compact it almost immediately — losing the history you came back for. Claude accepts `100000`–`1000000`, and a value outside that range is dropped rather than passed on. Set this to `0` to pass no flag at all, which is also what you want if `newSession.command` is not Claude.
 
 ### `claudeTerminalManager.tickets.command`
 

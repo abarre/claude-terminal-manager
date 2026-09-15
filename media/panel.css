@@ -169,13 +169,12 @@ button,
 }
 
 .tier::after,
-
 .tier .tdot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
   flex: none;
-  background: var(--ctm-idle);
+  background: currentColor;
 }
 
 /* ---------- ticket header ---------- */
@@ -344,6 +343,15 @@ button,
   flex: none;
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
+}
+
+.r1 .ctx {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
 }
 
 .r1 .kbd {
@@ -534,7 +542,8 @@ body.compact {
  * Hide the age while hovering rather than letting the two collide — the same
  * trade VS Code's own tree rows make.
  */
-.row:hover .age {
+.row:hover .age,
+.row:hover .ctx {
   visibility: hidden;
 }
 
@@ -573,4 +582,99 @@ body.compact {
 .grp .add svg {
   width: 14px;
   height: 14px;
+}
+
+/* ---------- colour ---------- */
+
+/*
+ * Projects all share one colour: it marks a label as a project name without
+ * making the panel a patchwork. Ticket states are the ones that differ from
+ * each other, since their colour carries the stage.
+ *
+ * Only the hue is per-label. Saturation and lightness follow the theme, which
+ * is what keeps the hues legible on a light background as well as a dark one.
+ * The theme kind arrives as a body class on the webview; the attribute
+ * selector covers the versions that only set it on the root element.
+ */
+:root {
+  --ctm-tint-s: 70%;
+  --ctm-tint-l: 74%;
+}
+
+body.vscode-light,
+html[data-vscode-theme-kind='vscode-light'] body {
+  --ctm-tint-s: 70%;
+  --ctm-tint-l: 32%;
+}
+
+body.vscode-high-contrast,
+html[data-vscode-theme-kind='vscode-high-contrast'] body {
+  --ctm-tint-s: 75%;
+  --ctm-tint-l: 78%;
+}
+
+body.vscode-high-contrast-light,
+html[data-vscode-theme-kind='vscode-high-contrast-light'] body {
+  --ctm-tint-s: 85%;
+  --ctm-tint-l: 30%;
+}
+
+.tint,
+.tier.tint {
+  color: hsl(var(--ctm-tint-h, 0) var(--ctm-tint-s) var(--ctm-tint-l));
+}
+
+/* Every project, everywhere in the panel, in the same blue. */
+.grp .gname,
+.r2 .repo {
+  color: hsl(210 var(--ctm-tint-s) var(--ctm-tint-l));
+}
+
+/* The hues a ticket state picks from, level with each other in contrast. */
+.tint-0 {
+  --ctm-tint-h: 210;
+}
+
+.tint-1 {
+  --ctm-tint-h: 145;
+}
+
+.tint-2 {
+  --ctm-tint-h: 35;
+}
+
+.tint-3 {
+  --ctm-tint-h: 350;
+}
+
+.tint-4 {
+  --ctm-tint-h: 275;
+}
+
+.tint-5 {
+  --ctm-tint-h: 190;
+}
+
+.tint-6 {
+  --ctm-tint-h: 15;
+}
+
+.tint-7 {
+  --ctm-tint-h: 165;
+}
+
+.tint-8 {
+  --ctm-tint-h: 310;
+}
+
+.tint-9 {
+  --ctm-tint-h: 95;
+}
+
+.tint-10 {
+  --ctm-tint-h: 240;
+}
+
+.tint-11 {
+  --ctm-tint-h: 330;
 }

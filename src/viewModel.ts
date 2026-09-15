@@ -28,6 +28,8 @@ export interface SessionView {
   readonly detail: string | undefined
   /** Epoch ms of the last thing that happened; the webview renders the age. */
   readonly at: number
+  /** Tokens the session is carrying, shown beside the age. */
+  readonly contextTokens: number | undefined
   /** False for history/ticket rows — a click resumes instead of focusing. */
   readonly live: boolean
   readonly source: string
@@ -156,6 +158,12 @@ export interface BuildInput {
   readonly activeTerminalId: number | undefined
   readonly terminals: readonly TerminalInput[]
   readonly storedName: (sessionId: string) => string | undefined
+  /**
+   * Context size per session, read from the transcripts off the push path.
+   * A lookup rather than a field so the number can refresh on its own timer
+   * without the state machine having to carry it.
+   */
+  readonly contextTokens: (sessionId: string) => number | undefined
   /**
    * Assign 0-9 shortcuts across the rows in the order the panel renders them.
    * Deriving them here rather than from a separate tree walk is what keeps
@@ -287,6 +295,7 @@ const toView = (
     lead,
     detail: fallbackDetail,
     at: record.lastEventAt,
+    contextTokens: input.contextTokens(record.sessionId),
     live: true,
     source: record.source,
     backgroundTasks: record.backgroundTasks,
@@ -322,6 +331,7 @@ const remoteToView = (
     lead,
     detail: detail ?? cleanPromptText(entry.subtitle),
     at: entry.lastEventAt ?? 0,
+    contextTokens: input.contextTokens(entry.sessionId),
     live: true,
     source: entry.source,
     backgroundTasks: entry.backgroundTasks,
@@ -352,6 +362,7 @@ const historyToView = (
   lead: undefined,
   detail: undefined,
   at: entry.endedAt,
+  contextTokens: input.contextTokens(entry.id),
   live: false,
   source: 'claude',
   backgroundTasks: 0,
@@ -507,6 +518,7 @@ export const buildTicketTiers = (
         lead: undefined,
         detail: undefined,
         at: s.endedAt,
+        contextTokens: input.contextTokens(s.id),
         live: false,
         source: 'claude',
         backgroundTasks: 0,

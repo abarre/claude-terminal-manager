@@ -5,7 +5,7 @@ import type {
   ViewModel,
 } from '../viewModel.js'
 import type { FromWebview, PanelView, StateMessage } from './protocol.js'
-import { ageOf } from './format.js'
+import { ageOf, stateTintOf, tokensOf } from './format.js'
 
 interface VsCodeApi {
   postMessage(message: FromWebview): void
@@ -109,6 +109,11 @@ const renderRow = (
     r1.appendChild(el('span', 'kbd', String(session.shortcut)))
   }
   r1.appendChild(el('span', 'name', session.title))
+  if (session.contextTokens !== undefined) {
+    const ctx = el('span', 'ctx', tokensOf(session.contextTokens))
+    ctx.title = `${session.contextTokens.toLocaleString()} tokens in context`
+    r1.appendChild(ctx)
+  }
   if (session.at > 0) {
     const age = el('span', 'age', ageOf(session.at, now))
     age.dataset['at'] = String(session.at)
@@ -116,11 +121,12 @@ const renderRow = (
   }
   row.appendChild(r1)
 
-  const showProject = options.showProject === true && session.project !== undefined
+  const project = options.showProject === true ? session.project : undefined
+  const showProject = project !== undefined
   const showBranch = options.showBranch === true && session.branch !== undefined
   if (showProject || showBranch) {
     const r2 = el('div', 'r2')
-    if (showProject) r2.appendChild(el('span', 'repo', session.project))
+    if (project !== undefined) r2.appendChild(el('span', 'repo', project))
     if (showBranch) {
       if (showProject) r2.appendChild(el('span', 'sep', '·'))
       r2.appendChild(el('span', 'brn', session.branch))
@@ -250,7 +256,7 @@ const renderTickets = (
   const frag = document.createDocumentFragment()
 
   for (const tier of model.tickets) {
-    const head = el('div', 'tier')
+    const head = el('div', `tier tint tint-${stateTintOf(tier.state)}`)
     head.appendChild(el('span', 'tdot'))
     head.appendChild(document.createTextNode(tier.state))
     frag.appendChild(head)

@@ -48,6 +48,7 @@ const input = (over: Partial<BuildInput> = {}): BuildInput => ({
   workspaceBranch: undefined,
   activeTerminalId: undefined,
   storedName: () => undefined,
+  contextTokens: () => undefined,
   shortcutsEnabled: false,
   ...over,
 })
