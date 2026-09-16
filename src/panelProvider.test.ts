@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const { mockGetConfiguration } = vi.hoisted(() => ({
+const { mockGetConfiguration, mockRunTicketCommand } = vi.hoisted(() => ({
   mockGetConfiguration: vi.fn((_key: string, defaultValue: unknown) => defaultValue),
+  mockRunTicketCommand: vi.fn(),
 }))
+
+vi.mock('./ticketProvider.js', () => ({ runTicketCommand: mockRunTicketCommand }))
 
 vi.mock('vscode', () => ({
   Uri: {
@@ -156,6 +159,54 @@ describe('PanelViewProvider', () => {
       }
       expect(message.type).toBe('state')
       expect(message.view).toBe('active')
+      expect(message.model.ticketsAvailable).toBe(false)
+      panel.dispose()
+    })
+
+    it('keeps the last good tickets when a refresh fails', async () => {
+      // A slow shell or a flaky ticket API must not make the tab disappear.
+      const { panel, webview } = resolve()
+      mockGetConfiguration.mockImplementation((key: string, fallback: unknown) =>
+        key === 'tickets.command' ? 'echo' : fallback,
+      )
+
+      mockRunTicketCommand.mockResolvedValueOnce([
+        { id: 'sc-1', state: 'In Development', title: 't', url: undefined, sessions: [] },
+      ])
+      await panel.refreshTickets()
+      panel.push()
+      const first = webview.postMessage.mock.calls.at(-1)?.[0] as {
+        model: { ticketsAvailable: boolean; tickets: unknown[] }
+      }
+      expect(first.model.ticketsAvailable).toBe(true)
+
+      mockRunTicketCommand.mockResolvedValueOnce(undefined)
+      await panel.refreshTickets()
+      panel.push()
+      const second = webview.postMessage.mock.calls.at(-1)?.[0] as {
+        model: { ticketsAvailable: boolean; tickets: unknown[] }
+      }
+      expect(second.model.ticketsAvailable).toBe(true)
+      expect(second.model.tickets).toHaveLength(1)
+      panel.dispose()
+    })
+
+    it('drops the tickets when the command is unset', async () => {
+      const { panel, webview } = resolve()
+      mockGetConfiguration.mockImplementation((key: string, fallback: unknown) =>
+        key === 'tickets.command' ? 'echo' : fallback,
+      )
+      mockRunTicketCommand.mockResolvedValueOnce([])
+      await panel.refreshTickets()
+
+      mockGetConfiguration.mockImplementation(
+        (_key: string, fallback: unknown) => fallback,
+      )
+      await panel.refreshTickets()
+      panel.push()
+      const message = webview.postMessage.mock.calls.at(-1)?.[0] as {
+        model: { ticketsAvailable: boolean }
+      }
       expect(message.model.ticketsAvailable).toBe(false)
       panel.dispose()
     })

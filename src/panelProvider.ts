@@ -43,6 +43,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   private _lastLiveIds = new Set<string>()
   private _pushTimer: ReturnType<typeof setTimeout> | undefined
   private _timers: Array<ReturnType<typeof setInterval>> = []
+  private _disposed = false
   private readonly _disposables: vscode.Disposable[] = []
 
   constructor(
@@ -140,11 +141,16 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
       }
       return
     }
-    this._tickets = await runTicketCommand({
+    const tickets = await runTicketCommand({
       command,
       cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
       log: this._log,
     })
+    // A failed run is a slow shell or a flaky API far more often than a command
+    // that stopped existing. Dropping the tab on one bad run makes the tickets
+    // vanish for a minute at a time; the stale list is the better answer.
+    if (tickets === undefined && this._tickets !== undefined) return
+    this._tickets = tickets
     this.schedulePush()
   }
 
@@ -196,6 +202,9 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   }
 
   schedulePush(): void {
+    // An in-flight refresh can land after the view is gone; a disposed panel
+    // must not wake back up to push into it.
+    if (this._disposed) return
     if (this._pushTimer !== undefined) clearTimeout(this._pushTimer)
     this._pushTimer = setTimeout(() => {
       this._pushTimer = undefined
@@ -377,6 +386,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   }
 
   dispose(): void {
+    this._disposed = true
     for (const timer of this._timers) clearInterval(timer)
     this._timers = []
     if (this._pushTimer !== undefined) clearTimeout(this._pushTimer)
