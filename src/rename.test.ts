@@ -26,6 +26,8 @@ vi.mock('vscode', () => ({
     }),
     registerFileDecorationProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
     registerWebviewViewProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+    state: { focused: true },
+    onDidChangeWindowState: vi.fn().mockReturnValue({ dispose: vi.fn() }),
     createOutputChannel: vi.fn().mockReturnValue({
       appendLine: vi.fn(),
       dispose: vi.fn(),
@@ -119,6 +121,7 @@ vi.mock('effect', async (importOriginal) => {
 
 vi.mock('./settings.js', () => ({
   getShowNonClaudeTerminals: vi.fn().mockReturnValue(true),
+  getTerminalTitleMaxLength: vi.fn().mockReturnValue(30),
   getNotificationsEnabled: vi.fn().mockReturnValue(true),
   getVerboseToolNames: vi.fn().mockReturnValue(false),
   getShowTerminalsFromAllWindows: vi.fn().mockReturnValue(false),

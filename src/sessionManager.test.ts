@@ -312,6 +312,38 @@ describe('SessionManager', () => {
   )
 
   // Scenario 10
+  it.effect('changes stream skips updates that change nothing', () =>
+    Effect.gen(function* () {
+      const mgr = yield* SessionManager
+      yield* mgr.processEvent(sessionStart('s1'))
+      yield* mgr.setTerminalId('s1', 7)
+
+      const ready = yield* Deferred.make<void>()
+      const streamFiber = yield* Effect.fork(
+        mgr.changes.pipe(
+          Stream.tap(() => Deferred.succeed(ready, undefined)),
+          Stream.take(2),
+          Stream.runCollect,
+        ),
+      )
+      yield* Deferred.await(ready)
+
+      // Same terminal, same slug twice, no attention to clear: none of these
+      // may wake subscribers, or correlation feeds back into itself.
+      yield* mgr.setTerminalId('s1', 7)
+      yield* mgr.setSlug('s1', 'one')
+      yield* mgr.setSlug('s1', 'one')
+      yield* mgr.clearAttention('s1')
+      yield* mgr.setTerminalId('s1', 8)
+
+      const emissions = Array.from(yield* Fiber.join(streamFiber))
+      expect(emissions).toHaveLength(2)
+      // The snapshot, then the slug — the repeated no-ops never surfaced.
+      expect(emissions[1]![0]!.slug).toBe('one')
+      expect(emissions[1]![0]!.terminalId).toBe(7)
+    }).pipe(Effect.provide(SessionManagerLive)),
+  )
+
   it.effect('changes stream starts with current snapshot', () =>
     Effect.gen(function* () {
       const mgr = yield* SessionManager

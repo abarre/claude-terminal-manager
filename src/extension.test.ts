@@ -54,6 +54,8 @@ vi.mock('vscode', () => ({
     }),
     registerFileDecorationProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
     registerWebviewViewProvider: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+    state: { focused: true },
+    onDidChangeWindowState: vi.fn().mockReturnValue({ dispose: vi.fn() }),
     createOutputChannel: vi.fn().mockReturnValue({
       appendLine: vi.fn(),
       dispose: vi.fn(),

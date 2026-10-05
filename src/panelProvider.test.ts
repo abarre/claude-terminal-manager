@@ -21,7 +21,11 @@ vi.mock('vscode', () => ({
   },
   commands: { executeCommand: vi.fn().mockResolvedValue(undefined) },
   env: { openExternal: vi.fn().mockResolvedValue(true) },
-  window: { activeTerminal: undefined },
+  window: {
+    activeTerminal: undefined,
+    state: { focused: true },
+    onDidChangeWindowState: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+  },
   workspace: {
     name: 'ws',
     workspaceFolders: [],
@@ -43,6 +47,7 @@ const makeProvider = () =>
     getWorkspaceName: vi.fn().mockReturnValue('ws'),
     getBranch: vi.fn().mockReturnValue('main'),
     getTerminalPid: vi.fn(),
+    getTerminalForSession: vi.fn(),
     getShortcutIndexForSession: vi.fn(),
   }) as never
 
@@ -191,6 +196,26 @@ describe('PanelViewProvider', () => {
       panel.dispose()
     })
 
+    it('never runs the tickets command twice at once', async () => {
+      const { panel } = resolve()
+      mockGetConfiguration.mockImplementation((key: string, fallback: unknown) =>
+        key === 'tickets.command' ? 'echo' : fallback,
+      )
+      let finish: (value: undefined) => void = () => {}
+      mockRunTicketCommand.mockClear()
+      mockRunTicketCommand.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+      )
+      const first = panel.refreshTickets()
+      await panel.refreshTickets()
+      expect(mockRunTicketCommand).toHaveBeenCalledTimes(1)
+      finish(undefined)
+      await first
+      panel.dispose()
+    })
+
     it('drops the tickets when the command is unset', async () => {
       const { panel, webview } = resolve()
       mockGetConfiguration.mockImplementation((key: string, fallback: unknown) =>
@@ -208,6 +233,24 @@ describe('PanelViewProvider', () => {
         model: { ticketsAvailable: boolean }
       }
       expect(message.model.ticketsAvailable).toBe(false)
+      panel.dispose()
+    })
+
+    it('posts nothing to a hidden panel but still updates the badge', () => {
+      const panel = new PanelViewProvider(extensionUri, makeProvider(), makeState())
+      const webview = makeWebview()
+      const view = makeView(webview)
+      panel.resolveWebviewView(view as never)
+      webview.postMessage.mockClear()
+      view.visible = false
+      view.badge = 'stale'
+      panel.push()
+      expect(
+        webview.postMessage.mock.calls.filter(
+          ([m]) => (m as { type: string }).type === 'state',
+        ),
+      ).toHaveLength(0)
+      expect(view.badge).toBeUndefined()
       panel.dispose()
     })
 

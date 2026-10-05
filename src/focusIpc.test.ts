@@ -73,4 +73,21 @@ describe('focusIpc', () => {
       // No assertion needed — effect must complete without error
     }),
   )
+
+  it.effect('writeFocusRequest records a close action and omits it for focus', () =>
+    Effect.gen(function* () {
+      yield* writeFocusRequest(tmpDir, 'win1', 'claude', 42, 'sess', 'close')
+      const close = JSON.parse(
+        fs.readFileSync(getFocusRequestPath(tmpDir, 'win1'), 'utf8'),
+      ) as FocusRequest
+      expect(close.action).toBe('close')
+      expect(close.pid).toBe(42)
+
+      yield* writeFocusRequest(tmpDir, 'win2', 'claude', 42, 'sess', 'focus')
+      const focus = JSON.parse(
+        fs.readFileSync(getFocusRequestPath(tmpDir, 'win2'), 'utf8'),
+      ) as FocusRequest
+      expect(focus.action).toBeUndefined()
+    }),
+  )
 })

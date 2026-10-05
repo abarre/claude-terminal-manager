@@ -317,7 +317,7 @@ describe('ClaudeTerminalProvider', () => {
       expect(children[0]).toMatchObject({ kind: 'session', record })
     })
 
-    it('(c) retry correlation fires for each new event on unmatched session', () => {
+    it('(c) retry correlation fires for each new event on unmatched session', async () => {
       const mockCorrelate = vi.fn<
         (
           pid: number,
@@ -347,9 +347,42 @@ describe('ClaudeTerminalProvider', () => {
       )
 
       // Second event (new event for same unmatched session — retry)
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
       vi.clearAllMocks()
       sessionCallback?.([record])
       expect(mockCorrelate).toHaveBeenCalledTimes(1)
+    })
+
+    it('(c2) a burst of events runs one walk, then one re-run', async () => {
+      let finish: (value: undefined) => void = () => {}
+      const mockCorrelate = vi.fn<
+        (
+          pid: number,
+          terminals: ReadonlyArray<vscode.Terminal>,
+        ) => Promise<vscode.Terminal | undefined>
+      >()
+      mockCorrelate.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve
+          }),
+      )
+      mockCorrelate.mockResolvedValue(undefined)
+
+      let sessionCallback:
+        | ((sessions: ReadonlyArray<SessionRecord>) => void)
+        | undefined
+      new ClaudeTerminalProvider((cb) => {
+        sessionCallback = cb
+      }, mockCorrelate)
+
+      const record = makeRecord({ pid: process.pid, terminalId: undefined })
+      for (let i = 0; i < 50; i++) sessionCallback?.([record])
+      expect(mockCorrelate).toHaveBeenCalledTimes(1)
+
+      finish(undefined)
+      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      expect(mockCorrelate).toHaveBeenCalledTimes(2)
     })
 
     it('(d) after correlation succeeds, session gets terminal reference', async () => {

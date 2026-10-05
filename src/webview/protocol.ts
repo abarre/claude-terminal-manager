@@ -12,7 +12,13 @@ export interface StateMessage {
   readonly shortcutsEnabled: boolean
 }
 
-export type ToWebview = StateMessage
+/** Extension -> webview: the VS Code window gained or lost focus. */
+export interface WindowMessage {
+  readonly type: 'window'
+  readonly focused: boolean
+}
+
+export type ToWebview = StateMessage | WindowMessage
 
 /** Webview -> extension. */
 export type FromWebview =

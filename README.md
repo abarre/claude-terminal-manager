@@ -217,7 +217,7 @@ On macOS, activates a specific remote VS Code window through the native Accessib
 
 ### `claudeTerminalManager.history.hours`
 
-**Default:** `24`
+**Default:** `168` (7 days)
 
 How far back to list finished sessions under each project. Set to `0` to hide them entirely.
 

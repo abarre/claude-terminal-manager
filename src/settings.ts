@@ -34,13 +34,19 @@ export const getPanelDensity = (): 'comfortable' | 'compact' =>
 export const getHistoryHours = (): number =>
   vscode.workspace
     .getConfiguration('claudeTerminalManager')
-    .get<number>('history.hours', 24)
+    .get<number>('history.hours', 168)
 
 /** Shell command emitting ticket JSON. Empty hides the Tickets tab entirely. */
 export const getTicketsCommand = (): string =>
   vscode.workspace
     .getConfiguration('claudeTerminalManager')
     .get<string>('tickets.command', '')
+
+/** Longest session name shown in a terminal tab title. 0 leaves titles alone. */
+export const getTerminalTitleMaxLength = (): number =>
+  vscode.workspace
+    .getConfiguration('claudeTerminalManager')
+    .get<number>('terminalTitle.maxLength', 30)
 
 export const getTicketsRefreshSeconds = (): number =>
   vscode.workspace

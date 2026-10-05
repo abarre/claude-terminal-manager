@@ -309,6 +309,11 @@ button,
   }
 }
 
+.still .spin circle,
+.still .pulse {
+  animation-play-state: paused;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .spin circle,
   .pulse {

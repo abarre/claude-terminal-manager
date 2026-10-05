@@ -5,14 +5,21 @@ import type { HistoryEntry, TicketRecord, ViewModel } from './viewModel.js'
 import { readSessionHistory } from './sessionHistory.js'
 import { readSessionContextTokens } from './contextSize.js'
 import { runTicketCommand } from './ticketProvider.js'
+import { TerminalTitles } from './terminalTitle.js'
 import {
   getHistoryHours,
   getPanelDensity,
   getTicketsCommand,
   getTicketsRefreshSeconds,
   getEnableTerminalShortcuts,
+  getTerminalTitleMaxLength,
 } from './settings.js'
-import type { FromWebview, PanelView, StateMessage } from './webview/protocol.js'
+import type {
+  FromWebview,
+  PanelView,
+  StateMessage,
+  WindowMessage,
+} from './webview/protocol.js'
 
 const VIEW_KEY = 'panel:view'
 const HISTORY_REFRESH_MS = 60_000
@@ -44,6 +51,10 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   private _pushTimer: ReturnType<typeof setTimeout> | undefined
   private _timers: Array<ReturnType<typeof setInterval>> = []
   private _disposed = false
+  private _windowFocused = vscode.window.state.focused
+  private _ticketsAt = 0
+  private _ticketsRunning = false
+  private readonly _titles: TerminalTitles
   private readonly _disposables: vscode.Disposable[] = []
 
   constructor(
@@ -51,12 +62,41 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
     private readonly _provider: ClaudeTerminalProvider,
     private readonly _state: vscode.Memento,
     private readonly _log: (message: string) => void = () => {},
+    titles?: TerminalTitles,
   ) {
+    this._titles = titles ?? new TerminalTitles(_log)
     this._disposables.push(
       this._provider.onDidChangeSessions(() => {
         this.schedulePush()
       }),
+      vscode.window.onDidChangeWindowState((state) => {
+        if (state.focused === this._windowFocused) return
+        this._windowFocused = state.focused
+        this.postWindowState()
+        // Catch up on what the timers skipped while the window was in the background.
+        if (this.isWatched) {
+          void this.refreshHistory()
+          this.refreshContext()
+          // The tickets command can take seconds; alt-tabbing must not re-run it.
+          const due = Math.max(15, getTicketsRefreshSeconds()) * 1000
+          if (Date.now() - this._ticketsAt >= due) void this.refreshTickets()
+        }
+      }),
     )
+  }
+
+  /**
+   * Whether anyone can be looking at the panel. With several windows open, the
+   * background ones would otherwise each keep re-reading transcripts and
+   * shelling out to the tickets command for a view nobody sees.
+   */
+  private get isWatched(): boolean {
+    return this._view?.visible === true && this._windowFocused
+  }
+
+  private postWindowState(): void {
+    const message: WindowMessage = { type: 'window', focused: this._windowFocused }
+    void this._view?.webview.postMessage(message)
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -94,18 +134,18 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
     if (this._timers.length > 0) return
     this._timers.push(
       setInterval(() => {
-        if (this._view?.visible === true) void this.refreshHistory()
+        if (this.isWatched) void this.refreshHistory()
       }, HISTORY_REFRESH_MS),
     )
     this._timers.push(
       setInterval(() => {
-        if (this._view?.visible === true) this.refreshContext()
+        if (this.isWatched) this.refreshContext()
       }, CONTEXT_REFRESH_MS),
     )
     this._timers.push(
       setInterval(
         () => {
-          if (this._view?.visible === true) void this.refreshTickets()
+          if (this.isWatched) void this.refreshTickets()
         },
         Math.max(15, getTicketsRefreshSeconds()) * 1000,
       ),
@@ -141,11 +181,21 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
       }
       return
     }
-    const tickets = await runTicketCommand({
-      command,
-      cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-      log: this._log,
-    })
+    // On a loaded machine one run can outlast the refresh interval; stacking
+    // another shell on top only makes the next one slower still.
+    if (this._ticketsRunning) return
+    this._ticketsRunning = true
+    this._ticketsAt = Date.now()
+    let tickets: readonly TicketRecord[] | undefined
+    try {
+      tickets = await runTicketCommand({
+        command,
+        cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+        log: this._log,
+      })
+    } finally {
+      this._ticketsRunning = false
+    }
     // A failed run is a slow shell or a flaky API far more often than a command
     // that stopped existing. Dropping the tab on one bad run makes the tickets
     // vanish for a minute at a time; the stale list is the better answer.
@@ -234,6 +284,19 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
       shortcutsEnabled,
     })
     this._lastModel = model
+    // Tabs show in background windows too, so titles follow every push.
+    this._titles.sync(
+      model,
+      (id) => {
+        const terminal = this._provider.getTerminalForSession(id)
+        const pid =
+          terminal === undefined ? undefined : this._provider.getTerminalPid(terminal)
+        return terminal === undefined || pid === undefined
+          ? undefined
+          : { pid, fallback: terminal.name }
+      },
+      getTerminalTitleMaxLength(),
+    )
 
     // A session that just stopped being live has become resumable, and its
     // transcript is already on disk — re-index now rather than leaving a gap
@@ -267,6 +330,9 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
           }
         : undefined
 
+    // A hidden webview renders nothing; showing it again schedules a push.
+    if (!view.visible) return
+
     const message: StateMessage = {
       type: 'state',
       model,
@@ -292,6 +358,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   private async _onMessage(message: FromWebview): Promise<void> {
     switch (message.type) {
       case 'ready':
+        this.postWindowState()
         this.push()
         return
       case 'setView':

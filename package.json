@@ -2,7 +2,7 @@
   "name": "claude-terminal-manager",
   "displayName": "Agent Terminal Manager",
   "description": "Track AI agent sessions (Claude, Codex) in VS Code terminals with sidebar panel",
-  "version": "1.1.19",
+  "version": "2.0.0",
   "publisher": "abarre",
   "license": "MIT",
   "type": "module",
@@ -305,9 +305,15 @@
             ],
             "description": "How much detail each session row shows."
           },
+          "claudeTerminalManager.terminalTitle.maxLength": {
+            "type": "number",
+            "default": 30,
+            "minimum": 0,
+            "markdownDescription": "Show each session's state and name in its terminal tab title, cut to this many characters. Requires `terminal.integrated.tabs.title` set to `${sequence}`. Set to 0 to leave tab titles alone."
+          },
           "claudeTerminalManager.history.hours": {
             "type": "number",
-            "default": 24,
+            "default": 168,
             "minimum": 0,
             "description": "List sessions that ended within this many hours under each project. Set to 0 to hide finished sessions."
           },

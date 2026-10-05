@@ -17,6 +17,7 @@ import {
   getResumeAutocompact,
   getUseMacOSAccessibilityForWindowFocus,
   getVerboseToolNames,
+  getTerminalTitleMaxLength,
 } from './settings.js'
 import { PanelViewProvider } from './panelProvider.js'
 import { findSessionCwd } from './sessionHistory.js'
@@ -60,6 +61,8 @@ const CLAUDE_HOOK_EVENTS = [
   'StopFailure',
   'SubagentStop',
 ]
+const AGENT_TERMINAL_NAME = 'Claude Code'
+
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
 const CODEX_HOOKS_PATH = path.join(os.homedir(), '.codex', 'hooks.json')
 const MACOS_ACCESSIBILITY_FOCUS_SCRIPT = `
@@ -467,6 +470,16 @@ export function activate(context: vscode.ExtensionContext): void {
   })
 
   context.environmentVariableCollection.replace('VSCODE_CLAUDE_SOCKET', socketPath)
+  // Claude re-sets its own title as it works, which would overwrite the state
+  // the extension writes into the tab. Only terminals opened afterwards see this.
+  const syncTitleEnv = (): void => {
+    if (getTerminalTitleMaxLength() > 0) {
+      context.environmentVariableCollection.replace('CLAUDE_CODE_DISABLE_TERMINAL_TITLE', '1')
+    } else {
+      context.environmentVariableCollection.delete('CLAUDE_CODE_DISABLE_TERMINAL_TITLE')
+    }
+  }
+  syncTitleEnv()
   context.environmentVariableCollection.description =
     'Agent Terminal Manager: provides socket path for agent hook events'
 
@@ -932,7 +945,6 @@ export function activate(context: vscode.ExtensionContext): void {
    * a real terminal in the main part of the window.
    */
   const openAgentTerminal = (
-    name: string,
     cwd: string | undefined,
     commandLine: string,
   ): vscode.Terminal => {
@@ -948,13 +960,17 @@ export function activate(context: vscode.ExtensionContext): void {
             ? { viewColumn: vscode.ViewColumn.One }
             : { viewColumn: vscode.ViewColumn.Active }
     outputChannel.appendLine(
-      `[CTM] openAgentTerminal: name="${name}" location=${where} ` +
+      `[CTM] openAgentTerminal: name="${AGENT_TERMINAL_NAME}" location=${where} ` +
         `cwd=${cwd ?? 'none'} command="${commandLine}"`,
     )
     const terminal = vscode.window.createTerminal({
-      name,
+      // A fixed name, not the folder: the tab says what runs in it, and the
+      // session title takes over as soon as Claude reports one.
+      name: AGENT_TERMINAL_NAME,
       ...(cwd !== undefined ? { cwd } : {}),
       location,
+      // Only settable at creation: terminals the user opens by hand keep theirs.
+      iconPath: vscode.Uri.joinPath(context.extensionUri, 'resources', 'claude-code.svg'),
     })
     terminal.show(false)
     terminal.sendText(commandLine)
@@ -979,8 +995,7 @@ export function activate(context: vscode.ExtensionContext): void {
           return
         }
         const cwd = await pickWorkingDirectory(named)
-        const name = cwd !== undefined ? path.basename(cwd) : 'claude'
-        openAgentTerminal(name, cwd, getNewSessionCommand())
+        openAgentTerminal(cwd, getNewSessionCommand())
       } catch (error) {
         outputChannel.appendLine(`[CTM] newSession failed: ${String(error)}`)
         void vscode.window.showErrorMessage(
@@ -1014,7 +1029,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const openLocally = (cwd: string, sessionId: string | undefined): void => {
     const command = getNewSessionCommand()
     openAgentTerminal(
-      path.basename(cwd),
       cwd,
       sessionId === undefined ? command : resumeCommand(command, sessionId),
     )
@@ -1177,7 +1191,34 @@ export function activate(context: vscode.ExtensionContext): void {
         terminal.dispose()
         return
       }
-      if (record === undefined) return
+      if (record === undefined) {
+        // The terminal belongs to another window: only that window can dispose
+        // it, so hand it the request. No activation — closing shouldn't steal focus.
+        const remote = provider
+          .getRemoteSessionInputs()
+          .find((r) => r.sessionId === sessionId)
+        outputChannel.appendLine(
+          `[CTM] closeSession: ${sessionId.slice(0, 8)} remote=${remote?.windowId ?? 'none'}`,
+        )
+        if (remote === undefined) return
+        if (remote.terminalPid === undefined) {
+          void vscode.window.showInformationMessage(
+            'Terminal not yet correlated — close it from its own window',
+          )
+          return
+        }
+        runtime.runFork(
+          writeFocusRequest(
+            globalStoragePath,
+            remote.windowId,
+            remote.terminalName,
+            remote.terminalPid,
+            remote.sessionId,
+            'close',
+          ),
+        )
+        return
+      }
       runtime.runFork(
         Effect.gen(function* () {
           const sm = yield* SessionManager
@@ -1420,6 +1461,22 @@ export function activate(context: vscode.ExtensionContext): void {
       outputChannel.appendLine(
         `[CTM] Focus request received: terminal="${req.terminalName}" pid=${req.pid ?? 'undefined'}`,
       )
+      if (req.action === 'close') {
+        // PID only: terminals commonly share a name, and a name fallback that
+        // lands on the wrong one would kill a session the user never picked.
+        const target =
+          req.pid === undefined
+            ? undefined
+            : vscode.window.terminals.find(
+                (t) => provider.getTerminalPid(t) === req.pid,
+              )
+        outputChannel.appendLine(
+          `[CTM] Close request: pid=${req.pid ?? 'undefined'} ${target === undefined ? 'not found' : 'disposed'}`,
+        )
+        target?.dispose()
+        fs.unlinkSync(focusPath)
+        return
+      }
       let terminal: vscode.Terminal | undefined
       if (req.pid !== undefined) {
         // Match by PID for exact terminal identification
@@ -1515,6 +1572,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     if (e.affectsConfiguration('claudeTerminalManager.history')) {
       void panel.refreshHistory()
+    }
+    if (e.affectsConfiguration('claudeTerminalManager.terminalTitle')) {
+      syncTitleEnv()
+      panel.schedulePush()
     }
   })
   context.subscriptions.push(configDisposable)

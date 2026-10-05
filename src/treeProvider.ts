@@ -85,6 +85,8 @@ export class ClaudeTerminalProvider {
 
   /** Maps terminal process PID → Terminal object for synchronous lookup */
   private _terminalPidMap = new Map<number, vscode.Terminal>()
+  private readonly _correlating = new Set<string>()
+  private _correlateAgain = false
 
   /** Maps Terminal object → PID for synchronous reverse lookup */
   private _terminalToPidMap = new Map<vscode.Terminal, number>()
@@ -239,9 +241,18 @@ export class ClaudeTerminalProvider {
         session.terminalId === undefined ||
         !this._terminalPidMap.has(session.terminalId)
       ) {
+        // A walk spawns one `ps` per process hop and can take seconds on a
+        // loaded machine; a burst of updates must not start one per update.
+        // A request arriving mid-walk is kept as a single re-run, since a
+        // terminal may have opened after the walk collected its list.
+        if (this._correlating.has(session.sessionId)) {
+          this._correlateAgain = true
+          continue
+        }
+        this._correlating.add(session.sessionId)
         const terminals = [...vscode.window.terminals]
-        void this._correlateSession(session.pid, terminals).then(
-          async (terminal) => {
+        void this._correlateSession(session.pid, terminals)
+          .then(async (terminal) => {
             if (terminal !== undefined) {
               const pid = await this._resolveTerminalPid(terminal)
               if (pid !== undefined) {
@@ -249,8 +260,14 @@ export class ClaudeTerminalProvider {
                 this._onCorrelationResult?.(session.sessionId, pid)
               }
             }
-          },
-        )
+          })
+          .finally(() => {
+            this._correlating.delete(session.sessionId)
+            if (this._correlateAgain && this._correlating.size === 0) {
+              this._correlateAgain = false
+              this._tryCorrelateUnmatched()
+            }
+          })
       }
     }
   }

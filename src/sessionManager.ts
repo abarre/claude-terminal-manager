@@ -149,8 +149,14 @@ const makeSessionManagerEffect = (
         return next
       })
 
+    // SubscriptionRef emits on every update, even one that hands back the same
+    // map. Each emission refreshes the panel, rewrites the window registry and
+    // re-runs correlation — which itself calls setTerminalId, so an unchanged
+    // write fed straight back into another emission. Updates signal "nothing
+    // changed" by returning the map untouched; drop those here.
     const changes: Stream.Stream<ReadonlyArray<SessionRecord>> =
       stateRef.changes.pipe(
+        Stream.changes,
         Stream.map((map) => Array.from(map.values())),
       )
 

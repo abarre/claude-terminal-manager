@@ -4,7 +4,7 @@ import type {
   TerminalView,
   ViewModel,
 } from '../viewModel.js'
-import type { FromWebview, PanelView, StateMessage } from './protocol.js'
+import type { FromWebview, PanelView, StateMessage, ToWebview } from './protocol.js'
 import { ageOf, stateTintOf, tokensOf } from './format.js'
 
 interface VsCodeApi {
@@ -477,7 +477,20 @@ body.addEventListener('contextmenu', (event) => {
 
 let lastSignature: string | undefined
 
-window.addEventListener('message', (event: MessageEvent<StateMessage>) => {
+// Spinners repaint every frame. In a window nobody is looking at, that is pure
+// cost multiplied by the number of windows open, so they freeze until it's back.
+let windowFocused = true
+const syncMotion = (): void => {
+  document.body.classList.toggle('still', !windowFocused || document.hidden)
+}
+document.addEventListener('visibilitychange', syncMotion)
+
+window.addEventListener('message', (event: MessageEvent<ToWebview>) => {
+  if (event.data.type === 'window') {
+    windowFocused = event.data.focused
+    syncMotion()
+    return
+  }
   if (event.data.type !== 'state') return
   const signature = JSON.stringify(event.data)
   if (signature === lastSignature) return
