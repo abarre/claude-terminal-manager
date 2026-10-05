@@ -355,6 +355,29 @@ describe('--source flag (T5.3)', () => {
     expect(parsed['background_tasks']).toBe(2)
   })
 
+  it('does not count websocket watchers as background work', async () => {
+    const sockPath = makeSockPath()
+    sockPaths.push(sockPath)
+
+    const line = await runReporter(
+      [],
+      {
+        session_id: 'sess-watch',
+        hook_event_name: 'Stop',
+        background_tasks: [
+          // An artifact live-update subscription: idle until a comment lands.
+          { id: 'w', type: 'monitor', status: 'running', description: 'watch' },
+          { id: 'm', type: 'monitor', status: 'running', description: 'mcp', server: 's', tool: 't' },
+          { id: 'b', type: 'shell', status: 'running', description: 'build' },
+        ],
+      },
+      sockPath,
+    )
+
+    const parsed = JSON.parse(line) as Record<string, unknown>
+    expect(parsed['background_tasks']).toBe(2)
+  })
+
   it('omits background_tasks entirely when the payload has no such field', async () => {
     const sockPath = makeSockPath()
     sockPaths.push(sockPath)

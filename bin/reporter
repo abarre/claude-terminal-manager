@@ -95,6 +95,16 @@ def _is_finished(item):
     status = item.get('status')
     return isinstance(status, str) and status.lower() in FINISHED_STATUSES
 
+def _is_watcher(item):
+    '''A websocket watcher, e.g. an artifact live-update subscription.
+
+    Claude Code lists these as `monitor` tasks that stay running until they
+    time out, while sitting idle waiting for a comment. Its own UI hides them
+    (`ambient`), but the hook payload drops that flag; what still tells them
+    apart is the missing `server`, which only MCP monitors carry.
+    '''
+    return item.get('type') == 'monitor' and 'server' not in item
+
 def background_task_count(payload, excluding_id=None):
     '''Still-running background agents/tasks, or None when the field is absent.
 
@@ -113,7 +123,7 @@ def background_task_count(payload, excluding_id=None):
                 continue
             if excluding_id and item.get('id') == excluding_id:
                 continue
-            if _is_finished(item):
+            if _is_finished(item) or _is_watcher(item):
                 continue
             n += 1
         return n
@@ -121,7 +131,7 @@ def background_task_count(payload, excluding_id=None):
         # Defensive: a map keyed by task id. Filter it like the list form
         # rather than trusting len(), so finished entries do not inflate it.
         return sum(
-            0 if isinstance(v, dict) and (_is_finished(v) or (excluding_id and k == excluding_id))
+            0 if isinstance(v, dict) and (_is_finished(v) or _is_watcher(v) or (excluding_id and k == excluding_id))
             else 1
             for k, v in value.items()
         )
