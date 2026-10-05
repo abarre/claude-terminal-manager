@@ -159,6 +159,11 @@ export interface BuildInput {
   readonly terminals: readonly TerminalInput[]
   readonly storedName: (sessionId: string) => string | undefined
   /**
+   * Maps a cwd to its repository's main checkout, so worktrees and
+   * subdirectories group under the repo they belong to.
+   */
+  readonly repoRoot?: (cwd: string) => string | undefined
+  /**
    * Context size per session, read from the transcripts off the push path.
    * A lookup rather than a field so the number can refresh on its own timer
    * without the state machine having to carry it.
@@ -181,6 +186,13 @@ export const projectNameOf = (cwd: string | undefined): string | undefined => {
   const parts = cwd.split(/[/\\]/).filter((p) => p.length > 0)
   return parts.length > 0 ? parts[parts.length - 1] : undefined
 }
+
+/** The project a cwd belongs to, seen through its repository root when known. */
+const projectOf = (
+  cwd: string | undefined,
+  input: BuildInput,
+): string | undefined =>
+  projectNameOf(cwd === undefined ? undefined : (input.repoRoot?.(cwd) ?? cwd))
 
 /**
  * Split a status label into an emphasised lead and the rest.
@@ -289,7 +301,7 @@ const toView = (
       record.slug ??
       record.customName ??
       fallbackName(record.source),
-    project: projectNameOf(record.cwd) ?? input.workspaceName,
+    project: projectOf(record.cwd, input) ?? input.workspaceName,
     branch: record.customName ?? input.workspaceBranch,
     state,
     lead,
@@ -325,7 +337,7 @@ const remoteToView = (
       input.storedName(entry.sessionId) ??
       entry.slug ??
       fallbackName(entry.source),
-    project: projectNameOf(entry.cwd) ?? entry.workspaceName,
+    project: projectOf(entry.cwd, input) ?? entry.workspaceName,
     branch: entry.branch,
     state,
     lead,
@@ -356,7 +368,7 @@ const historyToView = (
     input.storedName(entry.id) ??
     entry.title ??
     (projectNameOf(entry.cwd) ?? 'Claude'),
-  project: projectNameOf(entry.cwd),
+  project: projectOf(entry.cwd, input),
   branch: undefined,
   state: 'ended',
   lead: undefined,
@@ -436,7 +448,7 @@ export const buildProjectGroups = (
   }
 
   for (const terminal of input.terminals) {
-    const project = projectNameOf(terminal.cwd) ?? input.workspaceName
+    const project = projectOf(terminal.cwd, input) ?? input.workspaceName
     groupFor(project, undefined, terminal.cwd).terminals.push({
       pid: terminal.pid,
       name: terminal.name,

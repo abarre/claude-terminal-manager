@@ -231,6 +231,23 @@ describe('buildProjectGroups', () => {
     expect(groups.map((g) => g.name).sort()).toEqual(['engine', 'fstrz'])
   })
 
+  it('groups a worktree under the repository it belongs to', () => {
+    const roots: Record<string, string> = {
+      '/home/me/fstrz/.claude/worktrees/sc-1': '/home/me/fstrz',
+    }
+    const groups = buildProjectGroups(
+      input({
+        sessions: [
+          record({ sessionId: 'a', cwd: '/home/me/fstrz' }),
+          record({ sessionId: 'b', cwd: '/home/me/fstrz/.claude/worktrees/sc-1' }),
+        ],
+        repoRoot: (cwd) => roots[cwd] ?? cwd,
+      }),
+    )
+    expect(groups.map((g) => g.name)).toEqual(['fstrz'])
+    expect(groups[0]!.live.length).toBe(2)
+  })
+
   it('falls back to the workspace name when a session has no cwd', () => {
     const groups = buildProjectGroups(
       input({

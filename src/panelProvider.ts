@@ -6,6 +6,7 @@ import { readSessionHistory } from './sessionHistory.js'
 import { readSessionContextTokens } from './contextSize.js'
 import { runTicketCommand } from './ticketProvider.js'
 import { TerminalTitles } from './terminalTitle.js'
+import { createRepoRootCache } from './repoRoot.js'
 import {
   getHistoryHours,
   getPanelDensity,
@@ -51,6 +52,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   private _pushTimer: ReturnType<typeof setTimeout> | undefined
   private _timers: Array<ReturnType<typeof setInterval>> = []
   private _disposed = false
+  private readonly _repoRoot = createRepoRootCache()
   private _windowFocused = vscode.window.state.focused
   private _ticketsAt = 0
   private _ticketsRunning = false
@@ -280,6 +282,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
           : this._provider.getTerminalPid(vscode.window.activeTerminal),
       terminals: this._provider.getPlainTerminals(),
       storedName: (id) => this._state.get<string>(`session:name:${id}`),
+      repoRoot: this._repoRoot,
       contextTokens: (id) => this._context.get(id),
       shortcutsEnabled,
     })
