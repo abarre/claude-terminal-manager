@@ -7,6 +7,7 @@ import {
   decodeProjectFolder,
   encodeProjectFolder,
   findSessionCwd,
+  readFirstPrompt,
   readSessionHistory,
 } from './sessionHistory.js'
 
@@ -235,5 +236,23 @@ describe('findSessionCwd', () => {
     mkdirp(real)
     writeSession(tmp, encodeProjectFolder(real), 'sess', ['{}'])
     expect(findSessionCwd('sess', [], tmp)).toBe(real)
+  })
+})
+
+describe('readFirstPrompt', () => {
+  it('skips meta, command and tool-result turns to find the real prompt', () => {
+    const file = writeSession(tmp, '-p', 's', [
+      JSON.stringify({ type: 'mode', mode: 'normal' }),
+      JSON.stringify({ type: 'user', isMeta: true, message: { content: 'caveat' } }),
+      JSON.stringify({ type: 'user', message: { content: '<command-name>/clear</command-name>' } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: 'x' }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'check the  datadog contract' }] } }),
+    ])
+    expect(readFirstPrompt(file)).toBe('check the datadog contract')
+  })
+
+  it('returns undefined when the transcript has no prompt', () => {
+    const file = writeSession(tmp, '-p', 's', [JSON.stringify({ type: 'mode' })])
+    expect(readFirstPrompt(file)).toBeUndefined()
   })
 })

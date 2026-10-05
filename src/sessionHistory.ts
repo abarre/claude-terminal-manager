@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { readTitleFromFile } from './slugResolver.js'
+import { cleanPromptText } from './viewModel.js'
 import type { HistoryEntry } from './viewModel.js'
 
 export const DEFAULT_HISTORY_HOURS = 24
@@ -64,6 +65,62 @@ export const encodeProjectFolder = (cwd: string): string =>
 
 export const projectsRoot = (): string =>
   path.join(os.homedir(), '.claude', 'projects')
+
+/** The first prompt sits near the top; past this head we stop looking. */
+const PROMPT_HEAD_SIZE = 65536
+const MAX_PROMPT_TITLE = 120
+
+/**
+ * The user's first real prompt, used as a title when Claude never generated
+ * one — short sessions often end before it does, and newer transcripts carry
+ * no slug either. Same fallback Claude Code's own `/resume` list uses.
+ */
+export const readFirstPrompt = (file: string): string | undefined => {
+  let head: string
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(file, 'r')
+    const buf = Buffer.alloc(PROMPT_HEAD_SIZE)
+    const bytesRead = fs.readSync(fd, buf, 0, PROMPT_HEAD_SIZE, 0)
+    head = buf.toString('utf8', 0, bytesRead)
+  } catch {
+    return undefined
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch { /* best-effort */ }
+    }
+  }
+  for (const line of head.split('\n')) {
+    if (!line.includes('"type":"user"')) continue
+    let text: string | undefined
+    try {
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
+      const obj = JSON.parse(line)
+      if (obj.type !== 'user' || obj.isMeta === true) continue
+      const content = obj.message?.content
+      text =
+        typeof content === 'string'
+          ? content
+          : Array.isArray(content)
+            ? content
+                .filter((c: { type?: unknown }) => c.type === 'text')
+                .map((c: { text?: unknown }) => String(c.text ?? ''))
+                .join(' ')
+            : undefined
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
+    } catch {
+      // The head read can cut the last line short.
+      continue
+    }
+    const cleaned = cleanPromptText(text)
+    // Tool results are user turns too, but carry no text block.
+    if (cleaned === undefined || cleaned === 'Background task finished') continue
+    return cleaned.length > MAX_PROMPT_TITLE
+      ? `${cleaned.slice(0, MAX_PROMPT_TITLE - 1)}…`
+      : cleaned
+  }
+  return undefined
+}
 
 interface CacheEntry {
   readonly mtimeMs: number
@@ -143,7 +200,9 @@ export const readSessionHistory = async (
       if (cached !== undefined && cached.mtimeMs === f.mtimeMs) {
         title = cached.title
       } else {
-        title = await readTitleFromFile(f.file, { fullScanFallback: false })
+        title =
+          (await readTitleFromFile(f.file, { fullScanFallback: false })) ??
+          readFirstPrompt(f.file)
         titleCache.set(f.file, { mtimeMs: f.mtimeMs, title })
       }
       entries.push({ id: f.id, cwd, title, endedAt: f.mtimeMs })
